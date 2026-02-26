@@ -21,35 +21,57 @@ pip3 install -r requirements.txt
 
 ---
 
-## Onboarding (first-use only)
+## Onboarding (run immediately after install)
 
-**Before handling any skill command, check whether onboarding has completed:**
+**After installing, run onboarding before handling any other commands.**
+Onboarding runs exactly once — state persists to `~/.audiocipher/onboard_state.json`.
+
+### Agent integration pattern
+
+On every turn, check onboarding first:
 
 ```python
-from onboard import is_complete, run_onboard
+import subprocess, json
 
-if not is_complete():
-    result = run_onboard(
-        operator_input=user_message,        # text the operator typed
-        operator_attachment=wav_file_path,  # WAV they attached, or None
-    )
+def onboard_step(operator_input=None, operator_attachment=None):
+    cmd = ['python3', 'audiocipher.py', 'onboard']
+    if operator_input:    cmd += ['--input',      operator_input]
+    if operator_attachment: cmd += ['--attachment', operator_attachment]
+    result = json.loads(subprocess.check_output(cmd))
+    return result
+    # result = {"complete": bool, "phase": int, "message": str, "attachment": str|null}
+
+# In your message handler:
+result = onboard_step(operator_input=user_message, operator_attachment=wav_path)
+if not result['complete']:
     await send(result['message'])
     if result['attachment']:
         await send_audio(result['attachment'])
-    return  # swallow this turn; resume normal command handling next turn
+    return  # swallow turn; resume normal command handling next turn
 ```
 
-The flow runs **exactly once** — state is persisted to `~/.audiocipher/onboard_state.json`.
-After `is_complete()` returns `True` it stays True across restarts and re-imports.
+### CLI (manual / testing)
+
+```bash
+# Get current phase prompt (no args = re-prompt)
+python3 audiocipher.py onboard
+
+# Advance with operator reply
+python3 audiocipher.py onboard --input "i found it, it says AUDIOCIPHER"
+
+# Advance with operator WAV attachment (Phase 2)
+python3 audiocipher.py onboard --input "here's mine" --attachment operator.wav
+```
+
+Always outputs JSON: `{"complete": bool, "phase": int, "message": str, "attachment": str|null}`
 
 **Phase sequence:**
-1. Agent generates a mystery cipher WAV, sends it with a cryptic prompt
-2. Operator uploads to **audiocipher.app → Decode**, tells the agent what they found
-3. Agent asks operator to encode something on the site and send the WAV back
-4. Agent decodes operator's WAV and reveals what they said → setup complete
+1. Agent generates a mystery cipher WAV, sends it with a cryptic prompt → operator visits audiocipher.app to decode
+2. Operator reports what they found → agent asks them to encode something and send the WAV back
+3. Agent decodes operator's WAV and reveals what they said → complete
 
-Operator can type `"skip"` at any waiting phase to bypass and jump to complete.
-Call `reset_onboard()` to wipe state and restart (testing / re-installation only).
+Operator can type `"skip"` at any waiting phase to bypass.
+Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 
 ---
 
