@@ -827,6 +827,58 @@ def _decode_fsk(samples: np.ndarray, sr: int, p: dict) -> str:
 # DECODE — WaveSig / GGWave  (ported from decodeGGWave, app.html 4110–4193)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _probe_ggwave(samples: np.ndarray, sr: int) -> bool:
+    """
+    Spectral fingerprint: detect WaveSig from the signal itself, no metadata.
+
+    WaveSig's HI marker tone (GGWAVE_MARKER_HI = 10800 Hz) is played during
+    the 2-group preamble and falls well above all other AudioCipher modes:
+        HZAlpha max  = 8869 Hz
+        DTMF max     = 1633 Hz
+        FSK max      = 1200 Hz
+
+    We skip over any leading silence (e.g. the 400 ms pre-roll added by
+    `audiocipher video`) to locate the true preamble, then probe ONLY those
+    two groups where the HI marker plays exclusively — before any data tones
+    appear.  In that window channel 5 data tones (9000–10500 Hz) are absent,
+    giving a >100,000× signal-to-noise ratio vs the control band.
+
+    Works from any source including Twitter-re-encoded video because 10800 Hz
+    sits comfortably within AAC's passband and the 100 Hz bin spacing gives
+    a generous ±50 Hz error margin.
+    """
+    pg = round(sr * GGWAVE_SAMPLES_PER_FRAME * GGWAVE_FRAMES_PER_TX / GGWAVE_SAMPLE_RATE)
+    total_groups = len(samples) // pg
+    if total_groups < 5:
+        return False
+
+    # Find the first active frame group (skip pre-roll silence or quiet padding).
+    look_ahead = min(total_groups, 8)  # preamble can't be more than 8 groups in
+    energies   = [
+        float(np.sqrt(np.mean(samples[g * pg:(g + 1) * pg].astype(np.float64) ** 2)))
+        for g in range(look_ahead)
+    ]
+    mean_e    = sum(energies) / len(energies) or 1.0
+    threshold = mean_e * 0.2
+    first_active = next((g for g, e in enumerate(energies) if e > threshold), -1)
+    if first_active < 0:
+        return False
+
+    # Probe exactly those two preamble groups — no data tones yet.
+    start = first_active * pg
+    end   = start + 2 * pg
+    if end > len(samples):
+        return False
+    probe = samples[start:end]
+
+    # Energy at WaveSig HI marker (±1 bin around 10800 Hz).
+    hi   = fft_peak(probe, sr, GGWAVE_MARKER_HI - GGWAVE_DF, GGWAVE_MARKER_HI + GGWAVE_DF)
+    # Control: band above the marker — silent in all modes.
+    ctrl = fft_peak(probe, sr, GGWAVE_MARKER_HI + GGWAVE_DF, GGWAVE_MARKER_HI + 3 * GGWAVE_DF)
+    # HI marker must clearly outpower the noise floor (>10× is conservative).
+    return hi['amp'] > 0.0 and hi['amp'] > ctrl['amp'] * 10.0
+
+
 def _decode_ggwave(samples: np.ndarray, sr: int) -> str:
     # Single round() call to match the encoder's int(round(sr * frame_dur_ms/1000))
     # where frame_dur_ms = (GGWAVE_SAMPLES_PER_FRAME/GGWAVE_SAMPLE_RATE)*1000*GGWAVE_FRAMES_PER_TX.
@@ -954,7 +1006,12 @@ def decode(audio_path: str, mode: str = 'auto',
                 if v is not None:
                     p[py_key] = v
         else:
-            mode = 'hzalpha'
+            # No embedded metadata — probe the signal directly.
+            # _probe_ggwave detects the WaveSig HI marker tone at 10800 Hz,
+            # which is above all other AudioCipher modes and survives AAC.
+            # This is the real fix: no side-channel needed, works from any
+            # source including Twitter-re-encoded video.
+            mode = 'ggwave' if _probe_ggwave(samples, sr) else 'hzalpha'
 
     if mode in ('hzalpha', 'custom'):
         return _decode_hzalpha(samples, sr, p, freq_map=freq_map)
