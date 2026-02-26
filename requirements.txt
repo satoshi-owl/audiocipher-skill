@@ -1,0 +1,24 @@
+# AudioCipher skill — Python dependencies
+# Install with: pip3 install -r requirements.txt
+
+# Core numerics
+numpy>=1.24
+scipy>=1.11
+
+# Audio I/O
+soundfile>=0.12
+
+# Spectrogram / DSP (optional but strongly recommended — falls back to scipy)
+librosa>=0.10
+
+# Image processing
+Pillow>=10.0
+
+# Computer vision (QR detection, contour analysis, morphological ops)
+opencv-python>=4.8
+
+# QR / barcode reading
+pyzbar>=0.1.9
+
+# OCR
+pytesseract>=0.3.10
