@@ -1,19 +1,21 @@
 """
-video.py — AudioCipher-branded waveform video generation.
+video.py — AudioCipher-branded animated waveform video generation.
 
 Generates a 1280×720 (or custom) MP4 with:
   - AudioCipher dark brand theme (#0A0A0F bg, #00FF88 waveform)
-  - Three-layer waveform glow (outer bloom → inner → bright core)
-  - Subtle amplitude grid (±25 / ±50 / ±75% reference lines)
-  - CRT scanline overlay (every 3rd row dimmed 18%)
+  - ANIMATED waveform: bright played-region + dim upcoming-region + scanning playhead
+  - Three-layer glow (outer bloom → inner → bright core) on played bars
+  - Subtle amplitude grid (±25 / ±50 / ±75 % reference lines)
+  - CRT scanline overlay (every 3rd row dimmed 18 %)
   - Optional title text (top-left, off-white, large monospace)
   - AUDIOCIPHER logo badge (top-right, green pill)
   - audiocipher.app watermark (bottom-right, dim green)
   - H.264 + AAC, +faststart for Twitter/X streaming
 
-Rendering: waveform drawn in Python (PIL + numpy) → static frame PNG,
-then muxed with audio via ffmpeg (-loop 1 -tune stillimage).
-This avoids showwaves / geq filter quirks in various ffmpeg builds.
+Rendering: frames piped to ffmpeg via stdin (rawvideo RGB24).
+  - Pre-renders played/unplayed waveform arrays once.
+  - Per-frame: numpy column-slice blend + playhead line + scanlines.
+  - No temp PNGs — memory-efficient streaming.
 """
 from __future__ import annotations
 
@@ -31,14 +33,17 @@ import numpy as np
 # ─────────────────────────────────────────────────────────────────────────────
 # Brand palette
 # ─────────────────────────────────────────────────────────────────────────────
-_BG          = (10,  10,  15)   # #0A0A0F — near-black background
-_GREEN_CORE  = (0,  255, 136)   # #00FF88 — primary brand colour (waveform core)
-_GREEN_INNER = (0,  150,  75)   # mid-tone glow layer
-_GREEN_OUTER = (0,   40,  20)   # soft outer bloom
-_GREEN_DIM   = (0,   90,  45)   # watermark / secondary text
-_GRID_LINE   = (0,   22,  11)   # barely-visible amplitude reference lines
-_WHITE       = (218, 218, 228)  # off-white for title text
-_BADGE_BG    = (14,  30,  21)   # logo badge background
+_BG          = (10,  10,  15)   # #0A0A0F
+_GREEN_CORE  = (0,  255, 136)   # #00FF88 — waveform core / playhead
+_GREEN_INNER = (0,  150,  75)
+_GREEN_OUTER = (0,   40,  20)
+_GREEN_DIM   = (0,   55,  28)   # upcoming bars (pre-play)
+_GRID_LINE   = (0,   22,  11)
+_WHITE       = (218, 218, 228)
+_BADGE_BG    = (14,  30,  21)
+_PLAYHEAD    = (180, 255, 210)  # slightly cooler white-green for scan line
+
+FPS = 30  # output frame rate
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -46,18 +51,12 @@ _BADGE_BG    = (14,  30,  21)   # logo badge background
 # ─────────────────────────────────────────────────────────────────────────────
 
 def check_ffmpeg() -> bool:
-    """Return True if ffmpeg is available on PATH."""
     return shutil.which('ffmpeg') is not None
 
 
 def check_or_install_ffmpeg() -> bool:
-    """
-    Check for ffmpeg; attempt to install via Homebrew (macOS) or apt (Linux)
-    if not found.  Returns True if ffmpeg is available after the attempt.
-    """
     if check_ffmpeg():
         return True
-
     system = platform.system()
     try:
         if system == 'Darwin':
@@ -65,20 +64,13 @@ def check_or_install_ffmpeg() -> bool:
             subprocess.run(['brew', 'install', 'ffmpeg'], check=True)
         elif system == 'Linux':
             print('→ ffmpeg not found. Installing via apt…')
-            subprocess.run(
-                ['sudo', 'apt-get', 'install', '-y', 'ffmpeg'], check=True,
-            )
+            subprocess.run(['sudo', 'apt-get', 'install', '-y', 'ffmpeg'], check=True)
         else:
-            print(
-                f'⚠ ffmpeg not found and auto-install is not supported on {system}. '
-                'Please install from https://ffmpeg.org',
-                file=sys.stderr,
-            )
+            print(f'⚠ ffmpeg not found. Install from https://ffmpeg.org', file=sys.stderr)
             return False
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f'⚠ ffmpeg install failed: {e}', file=sys.stderr)
         return False
-
     return check_ffmpeg()
 
 
@@ -87,8 +79,7 @@ def check_or_install_ffmpeg() -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_font(size: int):
-    """Return a PIL ImageFont at `size` pt, falling back to the bitmap default."""
-    from PIL import ImageFont  # type: ignore
+    from PIL import ImageFont
     candidates = [
         '/System/Library/Fonts/Courier.dfont',
         '/System/Library/Fonts/SFNSMono.ttf',
@@ -110,165 +101,158 @@ def _load_font(size: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _draw_logo_badge(draw, right_x: int, top_y: int, font_sm) -> None:
-    """
-    Render the AUDIOCIPHER logo badge, right-aligned at (right_x, top_y).
-
-    Layout (190 × 30 px pill):
-      ╭──────────────────────╮
-      │  ●  AUDIOCIPHER      │
-      ╰──────────────────────╯
-    """
-    BADGE_W, BADGE_H = 190, 30
-    RADIUS  = 6
+    BADGE_W, BADGE_H, RADIUS = 190, 30, 6
     bx = right_x - BADGE_W
     by = top_y
-
-    # ── Rounded rect (Pillow 8.2+ or manual fallback) ────────────────────────
     try:
-        draw.rounded_rectangle(
-            [(bx, by), (bx + BADGE_W, by + BADGE_H)],
-            radius=RADIUS, fill=_BADGE_BG,
-        )
+        draw.rounded_rectangle([(bx, by), (bx + BADGE_W, by + BADGE_H)],
+                               radius=RADIUS, fill=_BADGE_BG)
     except AttributeError:
-        # Pillow < 8.2 — approximate with rectangle + corner ellipses
         r2 = RADIUS * 2
-        draw.rectangle([(bx + RADIUS, by), (bx + BADGE_W - RADIUS, by + BADGE_H)],
-                       fill=_BADGE_BG)
-        draw.rectangle([(bx, by + RADIUS), (bx + BADGE_W, by + BADGE_H - RADIUS)],
-                       fill=_BADGE_BG)
-        for cx, cy in [
-            (bx, by), (bx + BADGE_W - r2, by),
-            (bx, by + BADGE_H - r2), (bx + BADGE_W - r2, by + BADGE_H - r2),
-        ]:
+        draw.rectangle([(bx + RADIUS, by), (bx + BADGE_W - RADIUS, by + BADGE_H)], fill=_BADGE_BG)
+        draw.rectangle([(bx, by + RADIUS), (bx + BADGE_W, by + BADGE_H - RADIUS)], fill=_BADGE_BG)
+        for cx, cy in [(bx, by), (bx + BADGE_W - r2, by),
+                       (bx, by + BADGE_H - r2), (bx + BADGE_W - r2, by + BADGE_H - r2)]:
             draw.ellipse([(cx, cy), (cx + r2, cy + r2)], fill=_BADGE_BG)
-
-    # ── Thin green border ─────────────────────────────────────────────────────
     try:
-        draw.rounded_rectangle(
-            [(bx, by), (bx + BADGE_W, by + BADGE_H)],
-            radius=RADIUS, outline=_GREEN_DIM, width=1,
-        )
+        draw.rounded_rectangle([(bx, by), (bx + BADGE_W, by + BADGE_H)],
+                               radius=RADIUS, outline=_GREEN_DIM, width=1)
     except TypeError:
-        pass  # older Pillow may not support outline on rounded_rectangle
-
-    # ── Green dot accent ──────────────────────────────────────────────────────
+        pass
     DOT_R = 4
-    dot_cx = bx + 16
-    dot_cy = by + BADGE_H // 2
-    draw.ellipse(
-        [(dot_cx - DOT_R, dot_cy - DOT_R), (dot_cx + DOT_R, dot_cy + DOT_R)],
-        fill=_GREEN_CORE,
-    )
-
-    # ── "AUDIOCIPHER" text ────────────────────────────────────────────────────
-    draw.text((bx + 28, by + BADGE_H // 2 - 7), 'AUDIOCIPHER',
-              fill=_GREEN_CORE, font=font_sm)
+    dot_cx, dot_cy = bx + 16, by + BADGE_H // 2
+    draw.ellipse([(dot_cx - DOT_R, dot_cy - DOT_R), (dot_cx + DOT_R, dot_cy + DOT_R)],
+                 fill=_GREEN_CORE)
+    draw.text((bx + 28, by + BADGE_H // 2 - 7), 'AUDIOCIPHER', fill=_GREEN_CORE, font=font_sm)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Waveform frame renderer
+# Pre-render animation layers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_frame(
+def _build_layers(
     samples: np.ndarray,
     sr:      int,
     W:       int = 1280,
     H:       int = 720,
     title:   str | None = None,
-) -> 'PIL.Image.Image':  # type: ignore[name-defined]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int]:
     """
-    Render a single waveform frame as a PIL RGB image.
+    Pre-render three numpy arrays (H, W, 3) uint8:
+      played_arr   — bars in bright green with three-layer glow
+      unplayed_arr — bars in dim green  +  badge / title / watermark overlaid
+      ui_arr       — badge / title / watermark on black (for compositing)
 
-    Visual layers (bottom → top):
-      1. Near-black background (#0A0A0F)
-      2. Subtle amplitude grid (±25 / ±50 / ±75 %, barely visible)
-      3. Horizontal centre line (always visible, brand green mid-tone)
-      4. Three-layer glow waveform: outer bloom → inner glow → bright core
-      5. CRT scanline overlay (every 3rd row dimmed 18 %)
-      6. Title text     — top-left, off-white, 30pt monospace
-      7. AUDIOCIPHER badge — top-right, brand green pill
-      8. Watermark       — bottom-right, dim green 'audiocipher.app'
+    Also returns (MARGIN_X, WAVE_W, WAVE_CENTER).
     """
-    from PIL import Image, ImageDraw  # type: ignore
+    from PIL import Image, ImageDraw
 
     MARGIN_X    = 56
-    WAVE_W      = W - 2 * MARGIN_X     # waveform horizontal span (pixels)
-    WAVE_CENTER = H // 2               # vertical midpoint
-    WAVE_MAX_H  = int(H * 0.30)        # max half-height of tallest bar
+    WAVE_W      = W - 2 * MARGIN_X
+    WAVE_CENTER = H // 2
+    WAVE_MAX_H  = int(H * 0.30)
 
-    # ── 1. Background ─────────────────────────────────────────────────────────
-    arr = np.full((H, W, 3), _BG, dtype=np.uint8)
-
-    # ── 2. Subtle amplitude grid ──────────────────────────────────────────────
+    # ── Background + grid + centre line ──────────────────────────────────────
+    base = np.full((H, W, 3), _BG, dtype=np.uint8)
     for pct in (0.25, 0.50, 0.75):
         for sign in (1, -1):
             gy = WAVE_CENTER + int(sign * pct * WAVE_MAX_H)
             if 0 <= gy < H:
-                arr[gy, MARGIN_X:MARGIN_X + WAVE_W] = _GRID_LINE
+                base[gy, MARGIN_X:MARGIN_X + WAVE_W] = _GRID_LINE
+    base[WAVE_CENTER, MARGIN_X:MARGIN_X + WAVE_W] = _GREEN_INNER
 
-    # ── 3. Centre line ────────────────────────────────────────────────────────
-    arr[WAVE_CENTER, MARGIN_X:MARGIN_X + WAVE_W] = _GREEN_INNER
-
-    # ── 4. Per-column peak amplitude → bar heights ────────────────────────────
+    # ── Bar heights ───────────────────────────────────────────────────────────
     n = len(samples)
     col_edges = np.linspace(0, n, WAVE_W + 1, dtype=int)
-
     amps = np.zeros(WAVE_W, dtype=np.float32)
     for ci in range(WAVE_W):
         seg = samples[col_edges[ci]:col_edges[ci + 1]]
         if len(seg):
             amps[ci] = float(np.max(np.abs(seg.astype(np.float64))))
-
-    peak_global = float(amps.max())
-    if peak_global > 0:
-        amps /= peak_global
-
+    peak = float(amps.max())
+    if peak > 0:
+        amps /= peak
     bar_heights = np.maximum(1, (amps * WAVE_MAX_H).astype(int))
 
-    # Draw three-layer glow for each column
+    # ── played_arr: bright bars with three-layer glow ─────────────────────────
+    played = base.copy()
     for ci, bh in enumerate(bar_heights):
         px = MARGIN_X + ci
+        played[max(0, WAVE_CENTER - bh - 4):min(H, WAVE_CENTER + bh + 5), px] = _GREEN_OUTER
+        played[max(0, WAVE_CENTER - bh - 1):min(H, WAVE_CENTER + bh + 2), px] = _GREEN_INNER
+        played[max(0, WAVE_CENTER - bh)    :min(H, WAVE_CENTER + bh + 1), px] = _GREEN_CORE
 
-        # Outer bloom  (core ± 4 px each side)
-        y1 = max(0, WAVE_CENTER - bh - 4)
-        y2 = min(H, WAVE_CENTER + bh + 5)
-        arr[y1:y2, px] = _GREEN_OUTER
+    # ── unplayed_arr: dim bars ────────────────────────────────────────────────
+    unplayed = base.copy()
+    for ci, bh in enumerate(bar_heights):
+        px = MARGIN_X + ci
+        unplayed[max(0, WAVE_CENTER - bh):min(H, WAVE_CENTER + bh + 1), px] = _GREEN_DIM
 
-        # Inner glow  (core ± 1 px)
-        y1 = max(0, WAVE_CENTER - bh - 1)
-        y2 = min(H, WAVE_CENTER + bh + 2)
-        arr[y1:y2, px] = _GREEN_INNER
-
-        # Core bar  (exact amplitude)
-        y1 = max(0, WAVE_CENTER - bh)
-        y2 = min(H, WAVE_CENTER + bh + 1)
-        arr[y1:y2, px] = _GREEN_CORE
-
-    # ── 5. CRT scanlines ──────────────────────────────────────────────────────
-    arr[::3] = (arr[::3].astype(np.float32) * 0.82).clip(0, 255).astype(np.uint8)
-
-    img  = Image.fromarray(arr, 'RGB')
-    draw = ImageDraw.Draw(img)
-
-    # ── Load fonts ─────────────────────────────────────────────────────────────
+    # ── UI overlay (badge, title, watermark) on black ─────────────────────────
+    # Render on pure black so non-black pixels = UI pixels (mask via .any(axis=2))
+    ui_arr = np.zeros((H, W, 3), dtype=np.uint8)
+    ui_img  = Image.fromarray(ui_arr, 'RGB')
+    ui_draw = ImageDraw.Draw(ui_img)
     font_title = _load_font(30)
     font_sm    = _load_font(13)
 
-    # ── 6. Title (top-left) ────────────────────────────────────────────────────
     if title:
-        draw.text((MARGIN_X, 30), title.upper(), fill=_WHITE, font=font_title)
+        ui_draw.text((MARGIN_X, 30), title.upper(), fill=_WHITE, font=font_title)
 
-    # ── 7. AUDIOCIPHER logo badge (top-right) ─────────────────────────────────
-    _draw_logo_badge(draw, right_x=W - MARGIN_X, top_y=28, font_sm=font_sm)
+    _draw_logo_badge(ui_draw, right_x=W - MARGIN_X, top_y=28, font_sm=font_sm)
 
-    # ── 8. Watermark (bottom-right) ───────────────────────────────────────────
-    # Estimate text width conservatively so it sits inside the margin
     wm_text = 'audiocipher.app'
-    wm_x = W - MARGIN_X - len(wm_text) * 7   # ~7px per char at 13pt
-    draw.text((max(MARGIN_X, wm_x), H - 22), wm_text,
-              fill=_GREEN_DIM, font=font_sm)
+    wm_x = W - MARGIN_X - len(wm_text) * 7
+    ui_draw.text((max(MARGIN_X, wm_x), H - 22), wm_text, fill=_GREEN_DIM, font=font_sm)
 
-    return img
+    ui_arr = np.array(ui_img)
+
+    return played, unplayed, ui_arr, MARGIN_X, WAVE_W, WAVE_CENTER
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-frame renderer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_scanline_mult(H: int) -> np.ndarray:
+    """Float32 (H, 1, 1) multiplier: 0.82 every 3rd row, else 1.0."""
+    m = np.ones((H, 1, 1), dtype=np.float32)
+    m[::3] = 0.82
+    return m
+
+
+def _render_frame_animated(
+    played:   np.ndarray,
+    unplayed: np.ndarray,
+    ui_arr:   np.ndarray,
+    ui_mask:  np.ndarray,
+    scanline_mult: np.ndarray,
+    playhead_px: int,
+    MARGIN_X: int,
+    WAVE_W:   int,
+    H:        int,
+    W:        int,
+) -> np.ndarray:
+    """Render one video frame as a (H, W, 3) uint8 numpy array."""
+
+    # Blend played (left) + unplayed (right)
+    arr = unplayed.copy()
+    if playhead_px > MARGIN_X:
+        arr[:, MARGIN_X:playhead_px] = played[:, MARGIN_X:playhead_px]
+
+    # Playhead scan line — 3px wide, centre is brightest
+    for dx, col in ((0, _PLAYHEAD), (-1, _GREEN_INNER), (1, _GREEN_INNER)):
+        gx = playhead_px + dx
+        if MARGIN_X <= gx < MARGIN_X + WAVE_W:
+            arr[:, gx] = col
+
+    # CRT scanlines
+    arr = (arr.astype(np.float32) * scanline_mult).clip(0, 255).astype(np.uint8)
+
+    # Composite UI (badge / title / watermark) — no scanlines on top chrome
+    arr[ui_mask] = ui_arr[ui_mask]
+
+    return arr
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -278,7 +262,7 @@ def _render_frame(
 def generate_video(
     audio_path:    str,
     output_path:   str  = 'out.mp4',
-    style:         str  = 'null',        # reserved for future styles
+    style:         str  = 'null',
     resolution:    str  = '1280x720',
     title:         str | None = None,
     audio_bitrate: str  = '192k',
@@ -286,36 +270,27 @@ def generate_video(
     verbose:       bool = False,
 ) -> str:
     """
-    Generate an AudioCipher-branded waveform video from an audio file.
+    Generate an animated AudioCipher waveform video from an audio file.
+
+    The waveform plays through in real time: bars to the left of the playhead
+    glow bright green; bars to the right are dim. A scanning line marks the
+    current position.
 
     Args:
-        audio_path:     Path to input audio (WAV / MP3 / any ffmpeg-supported)
-        output_path:    Output MP4 path  (default: out.mp4)
-        style:          Reserved; only 'null' currently defined
-        resolution:     Output resolution as 'WxH'  (default: 1280x720)
-        title:          Optional title text displayed top-left (e.g. "NULL")
-        audio_bitrate:  AAC audio bitrate  (default: 192k)
-        video_preset:   ffmpeg libx264 preset: ultrafast / fast / medium
-        verbose:        Show ffmpeg output
+        audio_path:    Input audio (WAV / MP3 / any ffmpeg-readable format)
+        output_path:   Output MP4 path  (default: out.mp4)
+        style:         Reserved for future visual styles
+        resolution:    Output resolution as 'WxH'  (default: 1280x720)
+        title:         Title text displayed top-left (e.g. "NULL")
+        audio_bitrate: AAC bitrate  (default: 192k)
+        video_preset:  libx264 preset: ultrafast / fast / medium
+        verbose:       Show ffmpeg stderr
 
     Returns:
-        Absolute path to the generated MP4 file.
-
-    Raises:
-        RuntimeError:                  ffmpeg not available
-        subprocess.CalledProcessError: ffmpeg returned non-zero exit code
-
-    Notes:
-        - Twitter/X: H.264 + AAC, 1280×720, yuv420p, +faststart ✓
-        - Waveform is rendered by Python (PIL + numpy) as a static frame,
-          then muxed with audio via ffmpeg `-loop 1 -tune stillimage`.
-          This avoids ffmpeg showwaves / geq filter incompatibilities.
+        Absolute path to the generated MP4.
     """
     if not check_ffmpeg():
-        raise RuntimeError(
-            'ffmpeg is not installed. Run check_or_install_ffmpeg() '
-            'or install from https://ffmpeg.org'
-        )
+        raise RuntimeError('ffmpeg not available. Run check_or_install_ffmpeg().')
 
     audio_path  = str(Path(audio_path).resolve())
     output_path = str(Path(output_path).resolve())
@@ -325,7 +300,7 @@ def generate_video(
     except (ValueError, AttributeError):
         W, H = 1280, 720
 
-    # ── Load audio for waveform rendering ─────────────────────────────────────
+    # ── Load audio ────────────────────────────────────────────────────────────
     try:
         from utils import read_wav  # type: ignore
         samples, sr = read_wav(audio_path)
@@ -338,43 +313,110 @@ def generate_video(
         except Exception as exc:
             raise RuntimeError(f'Could not read audio: {exc}') from exc
 
-    # ── Render waveform frame ──────────────────────────────────────────────────
-    frame_img = _render_frame(samples, sr, W=W, H=H, title=title)
+    duration      = len(samples) / sr
+    total_frames  = max(1, int(duration * FPS))
 
-    # ── Write temp PNG, mux with audio via ffmpeg ─────────────────────────────
-    tmp_fd, frame_path = tempfile.mkstemp(suffix='.png')
-    os.close(tmp_fd)
+    print(f'→ {duration:.1f}s audio  ·  {total_frames} frames @ {FPS}fps', file=sys.stderr)
+
+    # ── AAC compatibility warning ──────────────────────────────────────────────
+    # HZAlpha uses widely-spaced chromatic tones that survive lossy AAC encoding.
+    # WaveSig (ggwave), FSK, and Morse use narrow frequency spacing that AAC
+    # distorts — the cipher cannot be decoded from the MP4 in those modes.
     try:
-        frame_img.save(frame_path, 'PNG')
+        from utils import read_wav  # type: ignore   # already imported above
+        _md_raw = b''
+        with open(audio_path, 'rb') as _f:
+            _md_raw = _f.read(2048)
+        _is_ggwave_likely = (
+            b'"mode": "ggwave"' in _md_raw
+            or b'"mode":"ggwave"' in _md_raw
+            or b'"mode": "fsk"' in _md_raw
+            or b'"mode": "morse"' in _md_raw
+        )
+    except Exception:
+        _is_ggwave_likely = False
 
-        cmd = [
-            'ffmpeg',
-            '-loop', '1',
-            '-i',    frame_path,     # static waveform image
-            '-i',    audio_path,     # audio track
-            '-c:v',  'libx264',
-            '-preset', video_preset,
-            '-crf',  '18',           # high quality — static frame compresses well
-            '-tune', 'stillimage',   # x264 optimisation for non-moving content
-            '-c:a',  'aac',
-            '-b:a',  audio_bitrate,
-            '-pix_fmt',  'yuv420p',      # required for Twitter/X
-            '-shortest',                 # end when audio track ends
-            '-movflags', '+faststart',   # Twitter-friendly streaming
-            '-y', output_path,
-        ]
+    if _is_ggwave_likely:
+        print(
+            '⚠  Warning: source audio uses a mode (WaveSig/FSK/Morse) whose '
+            'frequencies are too narrow to survive AAC video compression.\n'
+            '   The cipher CANNOT be decoded from this MP4.\n'
+            '   Re-encode with --mode hzalpha before wrapping in a video '
+            'if you need the MP4 to be decodable.',
+            file=sys.stderr,
+        )
+    else:
+        print(
+            '→ Decode from the original WAV, not the MP4 '
+            '(AAC is lossy — HZAlpha survives it, WaveSig/FSK/Morse do not).',
+            file=sys.stderr,
+        )
 
-        run_kw: dict = {'check': True}
-        if not verbose:
-            run_kw['stdout'] = subprocess.DEVNULL
-            run_kw['stderr'] = subprocess.DEVNULL
+    # ── Pre-render waveform layers ─────────────────────────────────────────────
+    print('→ Pre-rendering waveform layers…', file=sys.stderr)
+    played, unplayed, ui_arr, MARGIN_X, WAVE_W, WAVE_CENTER = _build_layers(
+        samples, sr, W=W, H=H, title=title,
+    )
+    ui_mask      = ui_arr.any(axis=2)          # True where UI pixels exist
+    scanline_mult = _make_scanline_mult(H)
 
-        subprocess.run(cmd, **run_kw)
-    finally:
-        try:
-            os.unlink(frame_path)
-        except OSError:
-            pass
+    # ── Open ffmpeg process (stdin = raw RGB24) ────────────────────────────────
+    cmd = [
+        'ffmpeg',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{W}x{H}',
+        '-pix_fmt', 'rgb24',
+        '-r', str(FPS),
+        '-i', '-',          # read frames from stdin
+        '-i', audio_path,   # audio track
+        '-c:v', 'libx264',
+        '-preset', video_preset,
+        '-crf', '20',
+        '-c:a', 'aac',
+        '-b:a', audio_bitrate,
+        '-pix_fmt', 'yuv420p',
+        '-shortest',
+        '-movflags', '+faststart',
+        '-y', output_path,
+    ]
+
+    stderr_dest = None if verbose else subprocess.DEVNULL
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=stderr_dest,
+    )
+
+    # ── Stream frames ─────────────────────────────────────────────────────────
+    print('→ Rendering frames…', file=sys.stderr)
+    try:
+        for fi in range(total_frames):
+            frac        = fi / total_frames
+            playhead_px = MARGIN_X + int(frac * WAVE_W)
+
+            frame = _render_frame_animated(
+                played, unplayed, ui_arr, ui_mask, scanline_mult,
+                playhead_px, MARGIN_X, WAVE_W, H, W,
+            )
+            proc.stdin.write(frame.tobytes())
+
+            if (fi + 1) % 30 == 0 or fi == total_frames - 1:
+                pct = (fi + 1) / total_frames * 100
+                print(f'\r  frame {fi + 1}/{total_frames}  ({pct:.0f}%)',
+                      end='', flush=True, file=sys.stderr)
+
+        print(file=sys.stderr)  # newline after progress
+        proc.stdin.close()
+        proc.wait()
+
+    except Exception:
+        proc.stdin.close()
+        proc.kill()
+        raise
+
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
 
     return output_path
 
@@ -384,10 +426,7 @@ def generate_video_safe(
     output_path: str = 'out.mp4',
     **kwargs,
 ) -> str | None:
-    """
-    Same as generate_video() but returns None on any error instead of raising.
-    Prints a warning to stderr on failure.
-    """
+    """Same as generate_video() but returns None on error instead of raising."""
     try:
         return generate_video(audio_path, output_path, **kwargs)
     except Exception as e:
