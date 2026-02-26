@@ -114,6 +114,28 @@ def cmd_decode(args: argparse.Namespace):
         if not shutil.which('ffmpeg'):
             print('✗ ffmpeg required to decode from video files.', file=sys.stderr)
             sys.exit(1)
+
+        # Recover cipher mode from the MP4 comment tag written by `audiocipher video`.
+        # This survives AAC re-encoding because it lives in the container, not the audio.
+        if args.mode == 'auto' and shutil.which('ffprobe'):
+            try:
+                _probe = subprocess.run(
+                    ['ffprobe', '-v', 'quiet',
+                     '-show_entries', 'format_tags=comment',
+                     '-of', 'default=noprint_wrappers=1:nokey=1',
+                     audio_path],
+                    capture_output=True, text=True,
+                )
+                _comment = _probe.stdout.strip()
+                if _comment.startswith('{'):
+                    _tag = json.loads(_comment)
+                    _meta = _tag.get('audiocipher', {})
+                    if _meta.get('mode'):
+                        args.mode = _meta['mode']
+                        print(f'→ Mode from MP4 tag: {args.mode}', file=sys.stderr)
+            except Exception:
+                pass
+
         fd, tmp_wav = tempfile.mkstemp(suffix='.wav')
         os.close(fd)
         subprocess.run(
