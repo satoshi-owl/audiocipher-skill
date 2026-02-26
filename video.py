@@ -23,6 +23,7 @@ Rendering: frames piped to ffmpeg via stdin (rawvideo RGB24).
 """
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
@@ -333,11 +334,10 @@ def generate_video(
     Returns:
         Absolute path to the generated MP4.
 
-    ⚠  Cipher mode compatibility with compressed audio:
+    Cipher mode compatibility with compressed audio:
         HZAlpha  — survives AAC, Opus, and Telegram/Twitter re-encoding. ✓
-        WaveSig  — NOT safe with any lossy codec (46.875 Hz bin spacing). ✗
-        FSK/Morse — NOT safe with lossy codecs. ✗
-        → Use encode --mode hzalpha for any cipher you plan to share as a video.
+        WaveSig  — survives AAC/Opus (100 Hz bin spacing since v0.2.3). ✓
+        FSK/Morse — NOT safe with lossy codecs (auto-transcoded to HZAlpha). ✗
     """
     if not check_ffmpeg():
         raise RuntimeError('ffmpeg not available. Run check_or_install_ffmpeg().')
@@ -384,22 +384,33 @@ def generate_video(
 
     print(f'→ {duration:.1f}s audio  ·  {total_frames} frames @ {FPS}fps', file=sys.stderr)
 
-    # ── Cipher mode warning ────────────────────────────────────────────────────
+    # ── Cipher mode detection + MP4 metadata tag ──────────────────────────────
+    # Read WAV header to detect mode and build an audiocipher comment tag.
+    # The tag survives AAC encoding (stored in the MP4 container, not audio),
+    # allowing `audiocipher decode` to auto-detect mode from the MP4 file.
+    _cipher_comment = None
+    _unsafe_mode = False
     try:
-        _md_raw = b''
-        with open(audio_path, 'rb') as _f:
-            _md_raw = _f.read(2048)
-        _unsafe_mode = (
-            b'"mode": "ggwave"' in _md_raw or b'"mode":"ggwave"' in _md_raw
-            or b'"mode": "fsk"'  in _md_raw or b'"mode":"fsk"'   in _md_raw
-            or b'"mode": "morse"' in _md_raw or b'"mode":"morse"' in _md_raw
-        )
+        from utils import parse_wav_metadata  # type: ignore
+        _wav_meta = parse_wav_metadata(audio_path)
+        if _wav_meta:
+            _cipher_comment = json.dumps({'audiocipher': _wav_meta}, separators=(',', ':'))
+            _mode_str = _wav_meta.get('mode', '')
+            _unsafe_mode = _mode_str in ('fsk', 'morse')
+        else:
+            _md_raw = b''
+            with open(audio_path, 'rb') as _f:
+                _md_raw = _f.read(2048)
+            _unsafe_mode = (
+                b'"mode": "fsk"'    in _md_raw or b'"mode":"fsk"'   in _md_raw
+                or b'"mode": "morse"' in _md_raw or b'"mode":"morse"' in _md_raw
+            )
     except Exception:
         _unsafe_mode = False
 
     if _unsafe_mode:
         print(
-            '⚠  WaveSig / FSK / Morse cipher detected.\n'
+            '⚠  FSK / Morse cipher detected.\n'
             '   These modes do NOT survive lossy codecs (AAC, Opus, Telegram re-encode).\n'
             '   Re-encode with --mode hzalpha for a decodable video:\n'
             '     python3 audiocipher.py encode "your message" --mode hzalpha',
@@ -416,16 +427,16 @@ def generate_video(
     else:
         if _unsafe_mode:
             print(
-                '⚠  --twitter: AAC will corrupt WaveSig/FSK/Morse frequencies.\n'
+                '⚠  --twitter: AAC will corrupt FSK/Morse frequencies.\n'
                 '   Cipher CANNOT be decoded from this MP4.\n'
                 '   Use --mode hzalpha when encoding if you need a decodable video.',
                 file=sys.stderr,
             )
         else:
             print(
-                '→ --twitter: AAC audio (lossy). HZAlpha survives; '
-                'WaveSig/FSK/Morse do not.\n'
-                '   Decode from the original WAV for guaranteed accuracy.',
+                '→ --twitter: AAC audio (lossy). HZAlpha and WaveSig survive; '
+                'FSK/Morse do not.\n'
+                '   Decode directly from this MP4 or from the original WAV.',
                 file=sys.stderr,
             )
 
@@ -452,6 +463,10 @@ def generate_video(
         ['-c:a', 'alac']
     )
 
+    # Embed cipher metadata as an MP4 comment tag so `audiocipher decode` can
+    # auto-detect mode even after AAC re-encoding strips the WAV RIFF metadata.
+    _meta_args = ['-metadata', f'comment={_cipher_comment}'] if _cipher_comment else []
+
     cmd = [
         'ffmpeg',
         '-f', 'rawvideo', '-vcodec', 'rawvideo',
@@ -468,6 +483,7 @@ def generate_video(
         # two codec hops (e.g. Telegram re-encode then Twitter re-encode).
         '-af', f'adelay={PRE_ROLL_MS}:all=1',
         *audio_args,
+        *_meta_args,
         '-pix_fmt', 'yuv420p',
         '-shortest',
         '-movflags', '+faststart',
