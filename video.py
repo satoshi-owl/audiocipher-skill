@@ -265,7 +265,8 @@ def generate_video(
     style:         str  = 'null',
     resolution:    str  = '1280x720',
     title:         str | None = None,
-    audio_bitrate: str  = '192k',
+    twitter:       bool = False,   # True → AAC 320k (social posting); False → ALAC lossless (default)
+    audio_bitrate: str  = '320k',  # only used when twitter=True
     video_preset:  str  = 'fast',
     verbose:       bool = False,
 ) -> str:
@@ -282,12 +283,20 @@ def generate_video(
         style:         Reserved for future visual styles
         resolution:    Output resolution as 'WxH'  (default: 1280x720)
         title:         Title text displayed top-left (e.g. "NULL")
-        audio_bitrate: AAC bitrate  (default: 192k)
+        twitter:       If True, encode audio as AAC 320k for Twitter/X posting.
+                       Default False = ALAC lossless — MP4 stays fully decodable.
+        audio_bitrate: AAC bitrate used only when twitter=True  (default: 320k)
         video_preset:  libx264 preset: ultrafast / fast / medium
         verbose:       Show ffmpeg stderr
 
     Returns:
         Absolute path to the generated MP4.
+
+    Notes:
+        Default (twitter=False): ALAC lossless audio — decode directly with:
+            python3 audiocipher.py decode cipher.mp4
+        twitter=True: AAC lossy — HZAlpha survives; WaveSig/FSK/Morse do not.
+            Twitter also re-encodes on upload, adding a second lossy pass.
     """
     if not check_ffmpeg():
         raise RuntimeError('ffmpeg not available. Run check_or_install_ffmpeg().')
@@ -318,39 +327,40 @@ def generate_video(
 
     print(f'→ {duration:.1f}s audio  ·  {total_frames} frames @ {FPS}fps', file=sys.stderr)
 
-    # ── AAC compatibility warning ──────────────────────────────────────────────
-    # HZAlpha uses widely-spaced chromatic tones that survive lossy AAC encoding.
-    # WaveSig (ggwave), FSK, and Morse use narrow frequency spacing that AAC
-    # distorts — the cipher cannot be decoded from the MP4 in those modes.
-    try:
-        from utils import read_wav  # type: ignore   # already imported above
-        _md_raw = b''
-        with open(audio_path, 'rb') as _f:
-            _md_raw = _f.read(2048)
-        _is_ggwave_likely = (
-            b'"mode": "ggwave"' in _md_raw
-            or b'"mode":"ggwave"' in _md_raw
-            or b'"mode": "fsk"' in _md_raw
-            or b'"mode": "morse"' in _md_raw
-        )
-    except Exception:
-        _is_ggwave_likely = False
-
-    if _is_ggwave_likely:
+    # ── Audio codec + decodability notice ─────────────────────────────────────
+    if not twitter:
         print(
-            '⚠  Warning: source audio uses a mode (WaveSig/FSK/Morse) whose '
-            'frequencies are too narrow to survive AAC video compression.\n'
-            '   The cipher CANNOT be decoded from this MP4.\n'
-            '   Re-encode with --mode hzalpha before wrapping in a video '
-            'if you need the MP4 to be decodable.',
+            '→ Audio: ALAC lossless — decode this MP4 directly with:\n'
+            '     python3 audiocipher.py decode ' + os.path.basename(output_path),
             file=sys.stderr,
         )
     else:
-        print(
-            '→ Decode from the original WAV, not the MP4 '
-            '(AAC is lossy — HZAlpha survives it, WaveSig/FSK/Morse do not).',
-            file=sys.stderr,
-        )
+        # Warn if source mode won't survive AAC
+        try:
+            _md_raw = b''
+            with open(audio_path, 'rb') as _f:
+                _md_raw = _f.read(2048)
+            _lossy_unsafe = (
+                b'"mode": "ggwave"' in _md_raw or b'"mode":"ggwave"' in _md_raw
+                or b'"mode": "fsk"' in _md_raw or b'"mode": "morse"' in _md_raw
+            )
+        except Exception:
+            _lossy_unsafe = False
+
+        if _lossy_unsafe:
+            print(
+                '⚠  --twitter: AAC will corrupt WaveSig/FSK/Morse frequencies.\n'
+                '   Cipher CANNOT be decoded from this MP4.\n'
+                '   Use --mode hzalpha when encoding if you need a decodable video.',
+                file=sys.stderr,
+            )
+        else:
+            print(
+                '→ --twitter: AAC audio (lossy). HZAlpha survives; '
+                'WaveSig/FSK/Morse do not.\n'
+                '   Decode from the original WAV for guaranteed accuracy.',
+                file=sys.stderr,
+            )
 
     # ── Pre-render waveform layers ─────────────────────────────────────────────
     print('→ Pre-rendering waveform layers…', file=sys.stderr)
@@ -361,6 +371,13 @@ def generate_video(
     scanline_mult = _make_scanline_mult(H)
 
     # ── Open ffmpeg process (stdin = raw RGB24) ────────────────────────────────
+    # Audio: ALAC lossless by default (MP4 stays decodable); AAC when --twitter
+    audio_args = (
+        ['-c:a', 'aac', '-b:a', audio_bitrate]
+        if twitter else
+        ['-c:a', 'alac']
+    )
+
     cmd = [
         'ffmpeg',
         '-f', 'rawvideo', '-vcodec', 'rawvideo',
@@ -372,8 +389,7 @@ def generate_video(
         '-c:v', 'libx264',
         '-preset', video_preset,
         '-crf', '20',
-        '-c:a', 'aac',
-        '-b:a', audio_bitrate,
+        *audio_args,
         '-pix_fmt', 'yuv420p',
         '-shortest',
         '-movflags', '+faststart',

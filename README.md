@@ -18,11 +18,12 @@
 ## What this lets you do
 
 - **Encode** a secret text message as an audio file using frequency-based ciphers
-- **Decode** a received WAV back to plain text — including auto-detecting the cipher mode
+- **Decode** a received WAV or MP4 back to plain text — including auto-detecting the cipher mode
 - **Hide an image inside audio** so it appears visually in a spectrogram (Aphex Twin technique)
 - **Analyze any audio** for hidden content: QR codes, embedded text, images, cipher tones, anomalies
 - **Render a spectrogram PNG** from any audio file for visual inspection
-- **Generate a branded MP4** from audio for posting to X/Twitter (agents can't post raw audio)
+- **Generate a branded MP4** from audio for posting to X/Twitter — ALAC lossless by default so the cipher stays decodable from the video file
+- **Self-update** — pull the latest version with one command; agents are notified automatically
 
 Designed for use with OpenClaw agents. All decoders are direct Python ports of [audiocipher.app](https://audiocipher.app) — encode in the browser, decode in code, or vice versa.
 
@@ -72,12 +73,18 @@ cat findings/results.json
 # Saves a cropped PNG per finding
 ```
 
-### Record a message and post it to X/Twitter
+### Record a message, post to X, decode the MP4 directly
 
 ```bash
 python3 audiocipher.py encode "NULL" --output null.wav
+# Default: ALAC lossless — cipher survives inside the video
 python3 audiocipher.py video null.wav --output null.mp4 --title "NULL"
-# Upload null.mp4 to X — branded waveform video, audio-encoded message inside
+# Decode directly from the MP4 — no separate WAV needed
+python3 audiocipher.py decode null.mp4
+# → NULL
+
+# Use --twitter for AAC social posting (HZAlpha only — other modes may not survive)
+python3 audiocipher.py video null.wav --output null_tw.mp4 --title "NULL" --twitter
 ```
 
 ### Try every cipher mode
@@ -99,11 +106,12 @@ python3 audiocipher.py decode fsk.wav     # → AUDIOCIPHER
 | Command | What it does |
 |---------|-------------|
 | `encode` | Encode a secret message as cipher audio (WAV) |
-| `decode` | Decode a received cipher WAV back to text |
+| `decode` | Decode a cipher WAV or MP4 back to text |
 | `spectrogram` | Render a spectrogram PNG from any audio file |
 | `image2audio` | Hide an image inside a spectrogram |
 | `analyze` | Full detection pipeline — QR codes, text, images, cipher tones |
-| `video` | Wrap audio in a branded MP4 for posting to X/Twitter |
+| `video` | Wrap audio in a branded MP4 (ALAC lossless; decodable) |
+| `update` | Pull the latest version from GitHub |
 
 ### encode
 ```bash
@@ -148,9 +156,16 @@ Outputs `findings/results.json` + a cropped PNG per finding:
 
 ### video
 ```bash
+# Default: ALAC lossless audio — cipher is decodable directly from the MP4
 python3 audiocipher.py video cipher.wav --output cipher.mp4 --title "NULL"
+python3 audiocipher.py decode cipher.mp4   # works!
+
+# For Twitter/X: AAC 320k (HZAlpha survives; WaveSig/FSK/Morse do not)
+python3 audiocipher.py video cipher.wav --output cipher.mp4 --twitter
 ```
-Produces a 1280×720 H.264 MP4 — dark background, brand-green waveform glow, AUDIOCIPHER badge, `audiocipher.app` watermark. Twitter/X compatible.
+Produces an animated 1280×720 H.264 MP4 — dark background, brand-green waveform glow, AUDIOCIPHER badge, `audiocipher.app` watermark. Twitter/X compatible.
+
+Options: `--twitter` (AAC for social posting) · `--resolution 1280x720` · `--title TEXT` · `--verbose`
 
 > **Always use `video` before posting audio to X — agents cannot post raw audio.**
 
@@ -198,12 +213,31 @@ import subprocess
 # Encode
 subprocess.run(['python3', 'audiocipher.py', 'encode', message, '--output', 'out.wav'])
 
-# Decode
-result = subprocess.run(['python3', 'audiocipher.py', 'decode', wav_path], capture_output=True, text=True)
+# Decode WAV or MP4 (ALAC video files decode directly — no separate WAV needed)
+result = subprocess.run(['python3', 'audiocipher.py', 'decode', 'out.wav'], capture_output=True, text=True)
 decoded_text = result.stdout.strip()
 
-# Video (always wrap before posting to X/Twitter)
+# Video — ALAC lossless by default (cipher stays decodable from the MP4)
 subprocess.run(['python3', 'audiocipher.py', 'video', 'out.wav', '--output', 'out.mp4', '--title', 'NULL'])
+
+# For Twitter/X posting use --twitter (AAC, HZAlpha mode recommended)
+subprocess.run(['python3', 'audiocipher.py', 'video', 'out.wav', '--output', 'out.mp4', '--twitter'])
+```
+
+### Keeping the skill up to date
+
+The skill checks for updates silently after each command and prints a notification to stderr
+if a newer version is available:
+
+```
+ℹ  Update available (v0.3.0) → python3 audiocipher.py update
+```
+
+Agents and operators can update immediately:
+
+```bash
+python3 audiocipher.py update
+# Pulls latest from GitHub + reinstalls dependencies
 ```
 
 ---

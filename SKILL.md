@@ -80,14 +80,19 @@ Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 | Task | Command |
 |------|---------|
 | Encode a secret message as audio | `encode` |
-| Decode a received cipher WAV | `decode` |
+| Decode a received cipher WAV or MP4 | `decode` |
 | Hide an image in a spectrogram | `image2audio` |
 | Find hidden content in audio | `analyze` |
 | Visually inspect audio as a PNG | `spectrogram` |
 | Create video for Twitter/X posting | `video` |
+| Update skill to latest version | `update` |
 
 > **Important:** Agents cannot post raw audio to X/Twitter. Always use the `video`
 > command to wrap audio in an MP4 before posting.
+>
+> **Decodable by default:** The `video` command stores audio as **ALAC lossless** inside
+> the MP4. You can decode the cipher directly from the video file:
+> `python3 audiocipher.py decode cipher.mp4`
 
 ---
 
@@ -121,9 +126,14 @@ automatically restore mode and parameters.
 
 ```bash
 python3 audiocipher.py decode cipher.wav
+# Decode directly from an MP4 (ALAC audio, no quality loss):
+python3 audiocipher.py decode cipher.mp4
 # or with explicit mode:
 python3 audiocipher.py decode cipher.wav --mode hzalpha
 ```
+
+Accepts WAV, MP4, MOV, MKV, M4A, and other ffmpeg-readable formats.
+When given a video file, the audio track is extracted automatically.
 
 **Options:**
 - `--mode`      `auto` | `hzalpha` | `morse` | `dtmf` | `fsk` | `ggwave` | `custom`
@@ -225,26 +235,51 @@ Use this to visually inspect audio before running `analyze`, or to verify
 ### `video` — Generate waveform video for X/Twitter
 
 ```bash
+# Default: ALAC lossless audio — cipher fully decodable from the MP4
 python3 audiocipher.py video cipher.wav --output cipher.mp4 --title "AUDIOCIPHER"
+
+# For Twitter/X posting: AAC 320k (HZAlpha survives; WaveSig/FSK/Morse do not)
+python3 audiocipher.py video cipher.wav --output cipher.mp4 --twitter
 ```
 
-Generates a 1280×720 H.264 MP4 with:
+Generates an animated 1280×720 H.264 MP4 with:
 - `#0A0A0F` near-black background
-- `#00FF88` brand-green waveform with three-layer glow (outer bloom → inner → core)
+- `#00FF88` brand-green animated waveform — played bars glow bright, unplayed bars dim, scanning playhead
+- Three-layer glow (outer bloom → inner → bright core) on played bars
 - CRT scanline overlay + subtle amplitude grid
 - `AUDIOCIPHER` logo badge (top-right) + `audiocipher.app` watermark (bottom-right)
 - Optional title text overlay (off-white, top-left)
 
-Waveform is rendered by Python (PIL + numpy) as a static frame, then muxed
-with audio via ffmpeg `-loop 1 -tune stillimage`. No ffmpeg filter quirks.
+**Audio codec:**
+- Default (no `--twitter`): **ALAC lossless** — the MP4 is a first-class cipher container.
+  Decode directly: `python3 audiocipher.py decode cipher.mp4`
+- `--twitter`: **AAC 320k** for social posting. HZAlpha tones survive AAC; WaveSig/FSK/Morse do not.
+  Twitter re-encodes on upload, adding a second lossy pass.
 
 **Options:**
 - `--output`     Output MP4 path  (default: `out.mp4`)
 - `--resolution` `WxH`  (default: `1280x720`)
 - `--title`      Optional title text overlay
+- `--twitter`    Encode as AAC 320k for social posting (lossy)
 - `--verbose`    Show ffmpeg output (useful for debugging)
 
-**Twitter/X compatibility:** H.264 + AAC, `yuv420p`, `+faststart`, 1280×720.
+**Twitter/X compatibility:** H.264 + AAC/ALAC, `yuv420p`, `+faststart`, 1280×720.
+
+---
+
+### `update` — Pull latest skill version
+
+```bash
+python3 audiocipher.py update
+```
+
+Runs `git pull origin main` + `pip3 install -r requirements.txt` to update the skill in place.
+The skill also performs a silent background version check after every command and prints a
+one-line notification to stderr if a newer version is available:
+
+```
+ℹ  Update available (v0.3.0) → python3 audiocipher.py update
+```
 
 ---
 
