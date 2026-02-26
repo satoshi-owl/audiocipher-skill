@@ -888,7 +888,17 @@ def _decode_ggwave(samples: np.ndarray, sr: int) -> str:
     frame_dur_samples = round(
         sr * GGWAVE_SAMPLES_PER_FRAME * GGWAVE_FRAMES_PER_TX / GGWAVE_SAMPLE_RATE
     )
-    total_groups      = len(samples) // frame_dur_samples
+
+    # AAC/Opus re-encoding can truncate the last frame group by a few hundred
+    # samples (codec frame-alignment at stream end).  If the tail is ≥50% of a
+    # full group it almost certainly contains real signal, so pad with zeros to
+    # include it — this recovers the last data/footer group that would otherwise
+    # be lost, restoring the final decoded character.
+    tail = len(samples) % frame_dur_samples
+    if tail >= frame_dur_samples // 2:
+        samples = np.concatenate([samples, np.zeros(frame_dur_samples - tail, dtype=samples.dtype)])
+
+    total_groups = len(samples) // frame_dur_samples
 
     if total_groups < 5:
         return '(audio too short for WaveSig)'
