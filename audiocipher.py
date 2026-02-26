@@ -190,6 +190,7 @@ def cmd_video(args: argparse.Namespace):
         resolution=args.resolution,
         title=args.title,
         twitter=args.twitter,
+        window_seconds=args.window_seconds,
         verbose=args.verbose,
     )
     size_mb = os.path.getsize(out) / (1024 * 1024)
@@ -399,6 +400,10 @@ Examples:
                      help='Encode audio as AAC 320k for Twitter/X posting '
                           '(lossy — HZAlpha survives; WaveSig/FSK/Morse may not). '
                           'Default: ALAC lossless — MP4 stays fully decodable.')
+    vid.add_argument('--window-seconds', type=float, default=4.0,
+                     metavar='S',
+                     help='Seconds of audio visible in the scrolling window (default: 4). '
+                          'Decrease for a more zoomed-in, animated look.')
     vid.add_argument('--verbose', action='store_true',
                      help='Show ffmpeg output')
     vid.set_defaults(func=cmd_video)
