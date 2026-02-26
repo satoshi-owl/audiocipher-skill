@@ -183,16 +183,88 @@ def cmd_video(args: argparse.Namespace):
         print('✗ ffmpeg is required but could not be installed.', file=sys.stderr)
         sys.exit(1)
 
-    out = generate_video(
-        args.audio,
-        output_path=args.output,
-        style=args.style,
-        resolution=args.resolution,
-        title=args.title,
-        twitter=args.twitter,
-        window_seconds=args.window_seconds,
-        verbose=args.verbose,
-    )
+    audio_path = args.audio
+    tmp_wav    = None
+
+    # ── Auto-transcode codec-unsafe cipher modes → HZAlpha ────────────────────
+    # WaveSig/FSK/Morse use narrow-spaced bins (≤47 Hz) that don't survive
+    # AAC or Opus compression. HZAlpha's chromatic tones (13+ Hz gaps) survive
+    # AAC 128k, Opus 96k, and Telegram/Twitter re-encoding.
+    _UNSAFE = ('ggwave', 'fsk', 'morse')
+    _unsafe_detected = False
+    try:
+        with open(audio_path, 'rb') as _f:
+            _md = _f.read(2048)
+        _unsafe_detected = any(
+            f'"mode": "{m}"'.encode() in _md or f'"mode":"{m}"'.encode() in _md
+            for m in _UNSAFE
+        )
+    except Exception:
+        pass
+
+    if _unsafe_detected:
+        print(
+            '→ Codec-unsafe cipher mode detected (WaveSig / FSK / Morse).\n'
+            '  Auto-transcoding to HZAlpha — survives Telegram, Twitter, and '
+            'any AAC/Opus re-encode…',
+            file=sys.stderr,
+        )
+        try:
+            from cipher import decode, write_cipher_wav  # type: ignore
+            # Detect original mode name from metadata
+            _orig_mode = 'auto'
+            for m in _UNSAFE:
+                if (f'"mode": "{m}"'.encode() in _md or
+                        f'"mode":"{m}"'.encode() in _md):
+                    _orig_mode = m
+                    break
+            message = decode(audio_path, mode=_orig_mode)
+            if not message:
+                message = decode(audio_path, mode='auto')
+            if message:
+                # Verify: write hzalpha and read it back — if they match, transcode is valid
+                fd, tmp_wav = tempfile.mkstemp(suffix='_hzalpha.wav')
+                os.close(fd)
+                write_cipher_wav(tmp_wav, message, mode='hzalpha')
+                _verify = decode(tmp_wav, mode='hzalpha')
+                if _verify == message:
+                    audio_path = tmp_wav
+                    print(f'  ✓ Transcoded → HZAlpha: "{message}"', file=sys.stderr)
+                else:
+                    os.unlink(tmp_wav)
+                    tmp_wav = None
+                    print(
+                        '  ⚠ Transcode verification failed (decoder round-trip mismatch).\n'
+                        '    Re-encode the message with --mode hzalpha for a survivable video:\n'
+                        '      python3 audiocipher.py encode "your message" --mode hzalpha',
+                        file=sys.stderr,
+                    )
+            else:
+                print(
+                    '  ⚠ Could not decode original cipher.\n'
+                    '    Re-encode the message with --mode hzalpha for a survivable video:\n'
+                    '      python3 audiocipher.py encode "your message" --mode hzalpha',
+                    file=sys.stderr,
+                )
+        except Exception as _e:
+            print(f'  ⚠ Transcode failed ({_e}) — using original audio.',
+                  file=sys.stderr)
+
+    try:
+        out = generate_video(
+            audio_path,
+            output_path=args.output,
+            style=args.style,
+            resolution=args.resolution,
+            title=args.title,
+            twitter=args.twitter,
+            window_seconds=args.window_seconds,
+            verbose=args.verbose,
+        )
+    finally:
+        if tmp_wav and os.path.exists(tmp_wav):
+            os.unlink(tmp_wav)
+
     size_mb = os.path.getsize(out) / (1024 * 1024)
     print(f'✓ Saved: {out}  ({size_mb:.1f} MB)')
 

@@ -368,6 +368,17 @@ def generate_video(
         except Exception as exc:
             raise RuntimeError(f'Could not read audio: {exc}') from exc
 
+    # ── Pre-roll: prepend silence to absorb AAC/Opus priming delay ─────────────
+    # AAC encoders have a ~46ms priming delay; two codec hops (e.g. Telegram
+    # then Twitter) can trim the first ~100ms of audio.  A 400ms silent pre-roll
+    # ensures the first cipher tone is always fully preserved.
+    PRE_ROLL_MS = 400
+    pre_roll_samples = int(PRE_ROLL_MS / 1000 * sr)
+    samples = np.concatenate([
+        np.zeros(pre_roll_samples, dtype=samples.dtype),
+        samples,
+    ])
+
     duration      = len(samples) / sr
     total_frames  = max(1, int(duration * FPS))
 
@@ -452,6 +463,10 @@ def generate_video(
         '-c:v', 'libx264',
         '-preset', video_preset,
         '-crf', '20',
+        # Pre-roll: delay audio by PRE_ROLL_MS ms (matches samples pre-roll above).
+        # Absorbs AAC/Opus encoder priming delay so the first cipher tone survives
+        # two codec hops (e.g. Telegram re-encode then Twitter re-encode).
+        '-af', f'adelay={PRE_ROLL_MS}:all=1',
         *audio_args,
         '-pix_fmt', 'yuv420p',
         '-shortest',
