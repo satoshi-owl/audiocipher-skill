@@ -851,11 +851,16 @@ def _decode_ggwave(samples: np.ndarray, sr: int) -> str:
         - next((g for g, e in enumerate(reversed(energies)) if e > threshold), -1)
     )
 
-    if first_active < 0 or last_active <= first_active + 2:
+    if first_active < 0 or last_active <= first_active + 4:
         return '(no WaveSig signal detected)'
 
-    data_start = first_active + 2
-    data_end   = last_active - 1  # inclusive
+    # ggwave structure: [2 preamble groups][1 silent gap][N data groups][1 silent gap][2 footer groups]
+    # Skip preamble (2) + silent gap (1) at start; skip silent gap (1) + footer (2) at end.
+    data_start = first_active + 3
+    data_end   = last_active - 3  # inclusive
+
+    if data_end < data_start:
+        return '(no WaveSig signal detected)'
 
     # Collect raw nibbles from each data frame group
     raw_nibbles: list[int] = []
@@ -869,14 +874,22 @@ def _decode_ggwave(samples: np.ndarray, sr: int) -> str:
             nib  = max(0, min(15, round((peak['freq'] - f_lo) / GGWAVE_DF)))
             raw_nibbles.append(nib)
 
-    # RS(12,8) ECC decoding
+    # RS(12,8) ECC decoding — fall back to raw data nibbles if RS corrupts the result.
+    # The FFT frequency detection is reliable enough that raw nibbles are often cleaner.
     decoded_nibbles: list[int] = []
     for i in range(0, len(raw_nibbles) - 11, 12):
-        block = raw_nibbles[i:i + 12]
+        block    = raw_nibbles[i:i + 12]
+        raw_data = block[:8]
         try:
-            decoded_nibbles.extend(GF16.decode(block)[:8])
+            rs_data = GF16.decode(block)[:8]
+            # Prefer RS only when it agrees with raw or raw has non-printable pairs
+            raw_bytes = [(raw_data[j] << 4) | raw_data[j + 1] for j in range(0, 7, 2)]
+            rs_bytes  = [(rs_data[j]  << 4) | rs_data[j + 1]  for j in range(0, 7, 2)]
+            raw_printable = sum(1 for b in raw_bytes if 32 <= b < 128)
+            rs_printable  = sum(1 for b in rs_bytes  if 32 <= b < 128)
+            decoded_nibbles.extend(rs_data if rs_printable >= raw_printable else raw_data)
         except Exception:
-            decoded_nibbles.extend(block[:8])
+            decoded_nibbles.extend(raw_data)
 
     # Nibble pairs → bytes → text
     bytes_out = [
