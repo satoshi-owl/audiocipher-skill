@@ -69,8 +69,12 @@ FSK_F0   = 1000   # mark (bit 0)
 FSK_F1   = 1200   # space (bit 1)
 FSK_BAUD = 300    # bits per second (legacy JS default was 45; Python default is 300)
 
-GGWAVE_F0               = 1875
-GGWAVE_DF               = 46.875
+# WaveSig uses 100 Hz bin spacing (up from the original 46.875 Hz).
+# 100 Hz is wide enough to survive AAC 128k and Opus 96k re-encoding
+# (two codec hops, e.g. Telegram → Twitter) while keeping all 6×16 = 96
+# frequency slots within 1000–10500 Hz — well inside AAC's reliable range.
+GGWAVE_F0               = 1000    # start frequency (Hz)
+GGWAVE_DF               = 100     # bin spacing (Hz)  — was 46.875 (too narrow for AAC)
 GGWAVE_SAMPLES_PER_FRAME = 1024
 GGWAVE_SAMPLE_RATE      = 48000
 GGWAVE_FRAMES_PER_TX    = 9
@@ -139,15 +143,35 @@ class GF16:
 
     @classmethod
     def encode(cls, data8):
-        """Append 4 parity nibbles to 8 data nibbles → 12 nibbles."""
-        g = cls._gen_poly()
-        msg = [d & 0xf for d in data8] + [0] * 4
-        for i in range(8):
-            coeff = msg[i]
-            if coeff != 0:
-                for j in range(1, 5):
-                    msg[i + j] ^= cls.mul(coeff, g[5 - 1 - (j - 1)])
-        return msg
+        """Append 4 parity nibbles to 8 data nibbles → 12 nibbles.
+
+        Uses an LFSR (linear feedback shift register) to compute the remainder
+        of (data_polynomial × x^4) mod g(x).  This is the standard systematic
+        RS encoder: data nibbles are copied unchanged to positions [0..7], and
+        parity nibbles go to [8..11].  All four syndromes of the result are
+        guaranteed to be zero (valid codeword).
+
+        The previous 'long-division in place' approach erroneously modified
+        data positions during the loop, producing non-systematic codewords
+        with non-zero syndromes, causing every round-trip to fail.
+        """
+        g = cls._gen_poly()   # g[0]=const term, g[4]=leading coeff=1
+        # 4-stage LFSR; reg[0] feeds back first (highest-degree stage).
+        reg = [0, 0, 0, 0]
+        for d in data8:
+            d = int(d) & 0xf
+            feedback = d ^ reg[0]
+            if feedback:
+                reg[0] = reg[1] ^ cls.mul(feedback, g[3])
+                reg[1] = reg[2] ^ cls.mul(feedback, g[2])
+                reg[2] = reg[3] ^ cls.mul(feedback, g[1])
+                reg[3] =          cls.mul(feedback, g[0])
+            else:
+                reg[0] = reg[1]
+                reg[1] = reg[2]
+                reg[2] = reg[3]
+                reg[3] = 0
+        return [int(d) & 0xf for d in data8] + reg
 
     @classmethod
     def decode(cls, received12):
