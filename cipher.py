@@ -828,8 +828,14 @@ def _decode_fsk(samples: np.ndarray, sr: int, p: dict) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _decode_ggwave(samples: np.ndarray, sr: int) -> str:
-    frame_size        = round(sr * GGWAVE_SAMPLES_PER_FRAME / GGWAVE_SAMPLE_RATE)
-    frame_dur_samples = frame_size * GGWAVE_FRAMES_PER_TX
+    # Single round() call to match the encoder's int(round(sr * frame_dur_ms/1000))
+    # where frame_dur_ms = (GGWAVE_SAMPLES_PER_FRAME/GGWAVE_SAMPLE_RATE)*1000*GGWAVE_FRAMES_PER_TX.
+    # Using round(sub_frame) * GGWAVE_FRAMES_PER_TX gives a 2-sample drift at 44100 Hz
+    # (941*9=8469 vs the correct 8467) that causes total_groups to be one short,
+    # cutting off the last data frame of longer messages.
+    frame_dur_samples = round(
+        sr * GGWAVE_SAMPLES_PER_FRAME * GGWAVE_FRAMES_PER_TX / GGWAVE_SAMPLE_RATE
+    )
     total_groups      = len(samples) // frame_dur_samples
 
     if total_groups < 5:

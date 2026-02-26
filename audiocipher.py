@@ -187,10 +187,13 @@ def cmd_video(args: argparse.Namespace):
     tmp_wav    = None
 
     # ── Auto-transcode codec-unsafe cipher modes → HZAlpha ────────────────────
-    # WaveSig/FSK/Morse use narrow-spaced bins (≤47 Hz) that don't survive
-    # AAC or Opus compression. HZAlpha's chromatic tones (13+ Hz gaps) survive
-    # AAC 128k, Opus 96k, and Telegram/Twitter re-encoding.
-    _UNSAFE = ('ggwave', 'fsk', 'morse')
+    # FSK and Morse use narrow-spaced bins (≤200 Hz) that don't survive AAC or
+    # Opus compression.  HZAlpha's chromatic tones (13+ Hz gaps) survive AAC
+    # 128k, Opus 96k, and Telegram/Twitter re-encoding chains.
+    #
+    # WaveSig (ggwave) is NOT in this list since v0.2.3 — it was fixed to use
+    # 100 Hz bin spacing (up from 46.875 Hz) which comfortably survives AAC.
+    _UNSAFE = ('fsk', 'morse')
     _unsafe_detected = False
     try:
         with open(audio_path, 'rb') as _f:
@@ -204,7 +207,7 @@ def cmd_video(args: argparse.Namespace):
 
     if _unsafe_detected:
         print(
-            '→ Codec-unsafe cipher mode detected (WaveSig / FSK / Morse).\n'
+            '→ Codec-unsafe cipher mode detected (FSK / Morse).\n'
             '  Auto-transcoding to HZAlpha — survives Telegram, Twitter, and '
             'any AAC/Opus re-encode…',
             file=sys.stderr,
