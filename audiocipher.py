@@ -3,12 +3,13 @@
 audiocipher.py — AudioCipher CLI entry point.
 
 Commands:
-  encode      <text>     Generate cipher audio WAV
-  decode      <audio>    Decode cipher audio to text
-  image2audio <image>    Convert image to audio (spectrogram technique)
-  analyze     <audio>    Find hidden content in audio spectrogram
-  spectrogram <audio>    Render a spectrogram PNG from audio
-  video       <audio>    Generate waveform MP4 for Twitter/X
+  onboard               Run first-use onboarding flow (outputs JSON)
+  encode      <text>    Generate cipher audio WAV
+  decode      <audio>   Decode cipher audio to text
+  image2audio <image>   Convert image to audio (spectrogram technique)
+  analyze     <audio>   Find hidden content in audio spectrogram
+  spectrogram <audio>   Render a spectrogram PNG from audio
+  video       <audio>   Generate waveform MP4 for Twitter/X
 
 Run `python3 audiocipher.py --help` for full usage.
 """
@@ -27,6 +28,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 # ─────────────────────────────────────────────────────────────────────────────
 # Sub-command handlers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def cmd_onboard(args: argparse.Namespace):
+    from onboard import run_onboard  # type: ignore
+
+    result = run_onboard(
+        operator_input=args.input,
+        operator_attachment=args.attachment,
+    )
+    print(json.dumps(result, indent=2))
+
 
 def cmd_encode(args: argparse.Namespace):
     from cipher import write_cipher_wav  # type: ignore
@@ -153,16 +164,37 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  python3 audiocipher.py onboard
+  python3 audiocipher.py onboard --input "I found it, it says AUDIOCIPHER"
+  python3 audiocipher.py onboard --input "here's my wav" --attachment operator.wav
   python3 audiocipher.py encode "HELLO WORLD" --output cipher.wav
   python3 audiocipher.py decode cipher.wav
   python3 audiocipher.py decode mystery.wav --mode auto
   python3 audiocipher.py image2audio logo.png --output hidden.wav --fmin 1000 --fmax 8000
   python3 audiocipher.py analyze mystery.wav --output-dir ./findings/
   python3 audiocipher.py spectrogram mystery.wav --output spec.png --colormap green --labeled
-  python3 audiocipher.py video cipher.wav --output cipher.mp4 --title "AudioCipher"
+  python3 audiocipher.py video cipher.wav --output cipher.mp4 --title "NULL"
 """,
     )
     sub = p.add_subparsers(dest='command', required=True)
+
+    # ── onboard ───────────────────────────────────────────────────────────────
+    onb = sub.add_parser(
+        'onboard',
+        help='Run first-use onboarding flow (outputs JSON).',
+        description=(
+            'Drives the one-time AudioCipher onboarding flow. '
+            'Always outputs JSON: {"complete": bool, "phase": int, "message": str, "attachment": str|null}. '
+            'Call with no args to get the current phase prompt. '
+            'Pass --input with operator reply to advance the flow. '
+            'Pass --attachment with a WAV path when operator sends audio.'
+        ),
+    )
+    onb.add_argument('--input', default=None, metavar='TEXT',
+                     help='Operator reply text (omit to re-prompt current phase)')
+    onb.add_argument('--attachment', default=None, metavar='WAV',
+                     help='Path to WAV file attached by operator (Phase 2)')
+    onb.set_defaults(func=cmd_onboard)
 
     # ── encode ────────────────────────────────────────────────────────────────
     enc = sub.add_parser(
