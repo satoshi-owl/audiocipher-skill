@@ -1,20 +1,24 @@
 """
-video.py — AudioCipher-branded animated waveform video generation.
+video.py — AudioCipher-branded scrolling waveform video generation.
 
 Generates a 1280×720 (or custom) MP4 with:
   - AudioCipher dark brand theme (#0A0A0F bg, #00FF88 waveform)
-  - ANIMATED waveform: bright played-region + dim upcoming-region + scanning playhead
-  - Three-layer glow (outer bloom → inner → bright core) on played bars
+  - SCROLLING waveform: the audio flows left past a fixed centre playhead
+    · Left half  (played)    — bright green with three-layer glow, tapers toward left edge
+    · Right half (upcoming)  — dim green, tapers toward right edge
+    · Fixed centre playhead  — bright vertical line
+    · Visible window ≈ 4 s of audio (zoom-in with --window-seconds)
   - Subtle amplitude grid (±25 / ±50 / ±75 % reference lines)
   - CRT scanline overlay (every 3rd row dimmed 18 %)
   - Optional title text (top-left, off-white, large monospace)
   - AUDIOCIPHER logo badge (top-right, green pill)
   - audiocipher.app watermark (bottom-right, dim green)
-  - H.264 + AAC, +faststart for Twitter/X streaming
+  - H.264 video + ALAC lossless audio by default (MP4 is fully decodable);
+    add --twitter for AAC 320k social posting.
 
 Rendering: frames piped to ffmpeg via stdin (rawvideo RGB24).
-  - Pre-renders played/unplayed waveform arrays once.
-  - Per-frame: numpy column-slice blend + playhead line + scanlines.
+  - Pre-computes a normalised per-pixel amplitude array once.
+  - Per-frame: vectorised numpy mask operations (no Python per-pixel loops).
   - No temp PNGs — memory-efficient streaming.
 """
 from __future__ import annotations
@@ -43,7 +47,8 @@ _WHITE       = (218, 218, 228)
 _BADGE_BG    = (14,  30,  21)
 _PLAYHEAD    = (180, 255, 210)  # slightly cooler white-green for scan line
 
-FPS = 30  # output frame rate
+FPS            = 30     # output frame rate
+WINDOW_SECONDS = 4.0    # seconds of audio visible in the scrolling window
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,70 +132,69 @@ def _draw_logo_badge(draw, right_x: int, top_y: int, font_sm) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pre-render animation layers
+# CRT scanlines
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_layers(
-    samples: np.ndarray,
-    sr:      int,
-    W:       int = 1280,
-    H:       int = 720,
-    title:   str | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int]:
+def _make_scanline_mult(H: int) -> np.ndarray:
+    """Float32 (H, 1, 1) multiplier: 0.82 every 3rd row, else 1.0."""
+    m = np.ones((H, 1, 1), dtype=np.float32)
+    m[::3] = 0.82
+    return m
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pre-computation helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _precompute_amps_scrolling(
+    samples:       np.ndarray,
+    sr:            int,
+    WAVE_W:        int,
+    window_seconds: float = WINDOW_SECONDS,
+) -> tuple[np.ndarray, int, int]:
     """
-    Pre-render three numpy arrays (H, W, 3) uint8:
-      played_arr   — bars in bright green with three-layer glow
-      unplayed_arr — bars in dim green  +  badge / title / watermark overlaid
-      ui_arr       — badge / title / watermark on black (for compositing)
+    Build a zero-padded normalised amplitude array for scrolling playback.
 
-    Also returns (MARGIN_X, WAVE_W, WAVE_CENTER).
+    Layout of returned padded array (length = 2*WAVE_W + n_pixels):
+      [0 .. WAVE_W-1]                 — left  zero-pad
+      [WAVE_W .. WAVE_W+n_pixels-1]   — actual per-pixel amplitudes
+      [WAVE_W+n_pixels .. end]        — right zero-pad
+
+    Returns:
+        bar_amps_padded   float32 (2*WAVE_W + n_pixels,)
+        samples_per_px    int — audio samples per pixel column
+        n_pixels          int — number of actual amplitude pixels
     """
-    from PIL import Image, ImageDraw
-
-    MARGIN_X    = 56
-    WAVE_W      = W - 2 * MARGIN_X
-    WAVE_CENTER = H // 2
-    WAVE_MAX_H  = int(H * 0.30)
-
-    # ── Background + grid + centre line ──────────────────────────────────────
-    base = np.full((H, W, 3), _BG, dtype=np.uint8)
-    for pct in (0.25, 0.50, 0.75):
-        for sign in (1, -1):
-            gy = WAVE_CENTER + int(sign * pct * WAVE_MAX_H)
-            if 0 <= gy < H:
-                base[gy, MARGIN_X:MARGIN_X + WAVE_W] = _GRID_LINE
-    base[WAVE_CENTER, MARGIN_X:MARGIN_X + WAVE_W] = _GREEN_INNER
-
-    # ── Bar heights ───────────────────────────────────────────────────────────
+    samples_per_px = max(1, int(window_seconds * sr / WAVE_W))
     n = len(samples)
-    col_edges = np.linspace(0, n, WAVE_W + 1, dtype=int)
-    amps = np.zeros(WAVE_W, dtype=np.float32)
-    for ci in range(WAVE_W):
-        seg = samples[col_edges[ci]:col_edges[ci + 1]]
-        if len(seg):
-            amps[ci] = float(np.max(np.abs(seg.astype(np.float64))))
-    peak = float(amps.max())
+    n_pixels = max(1, (n + samples_per_px - 1) // samples_per_px)
+
+    raw = np.zeros(n_pixels, dtype=np.float32)
+    for i in range(n_pixels):
+        s0 = i * samples_per_px
+        s1 = min(n, s0 + samples_per_px)
+        if s0 < n:
+            seg = samples[s0:s1]
+            raw[i] = float(np.max(np.abs(seg.astype(np.float64))))
+
+    peak = raw.max()
     if peak > 0:
-        amps /= peak
-    bar_heights = np.maximum(1, (amps * WAVE_MAX_H).astype(int))
+        raw /= peak
 
-    # ── played_arr: bright bars with three-layer glow ─────────────────────────
-    played = base.copy()
-    for ci, bh in enumerate(bar_heights):
-        px = MARGIN_X + ci
-        played[max(0, WAVE_CENTER - bh - 4):min(H, WAVE_CENTER + bh + 5), px] = _GREEN_OUTER
-        played[max(0, WAVE_CENTER - bh - 1):min(H, WAVE_CENTER + bh + 2), px] = _GREEN_INNER
-        played[max(0, WAVE_CENTER - bh)    :min(H, WAVE_CENTER + bh + 1), px] = _GREEN_CORE
+    padded = np.zeros(2 * WAVE_W + n_pixels, dtype=np.float32)
+    padded[WAVE_W: WAVE_W + n_pixels] = raw
+    return padded, samples_per_px, n_pixels
 
-    # ── unplayed_arr: dim bars ────────────────────────────────────────────────
-    unplayed = base.copy()
-    for ci, bh in enumerate(bar_heights):
-        px = MARGIN_X + ci
-        unplayed[max(0, WAVE_CENTER - bh):min(H, WAVE_CENTER + bh + 1), px] = _GREEN_DIM
 
-    # ── UI overlay (badge, title, watermark) on black ─────────────────────────
-    # Render on pure black so non-black pixels = UI pixels (mask via .any(axis=2))
-    ui_arr = np.zeros((H, W, 3), dtype=np.uint8)
+def _precompute_ui(
+    W:        int,
+    H:        int,
+    MARGIN_X: int,
+    title:    str | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Render badge / title / watermark once on black canvas."""
+    from PIL import Image, ImageDraw
+    ui_arr  = np.zeros((H, W, 3), dtype=np.uint8)
     ui_img  = Image.fromarray(ui_arr, 'RGB')
     ui_draw = ImageDraw.Draw(ui_img)
     font_title = _load_font(30)
@@ -202,54 +206,88 @@ def _build_layers(
     _draw_logo_badge(ui_draw, right_x=W - MARGIN_X, top_y=28, font_sm=font_sm)
 
     wm_text = 'audiocipher.app'
-    wm_x = W - MARGIN_X - len(wm_text) * 7
+    wm_x    = W - MARGIN_X - len(wm_text) * 7
     ui_draw.text((max(MARGIN_X, wm_x), H - 22), wm_text, fill=_GREEN_DIM, font=font_sm)
 
     ui_arr = np.array(ui_img)
+    return ui_arr, ui_arr.any(axis=2)
 
-    return played, unplayed, ui_arr, MARGIN_X, WAVE_W, WAVE_CENTER
+
+def _make_fade_curve(WAVE_W: int) -> np.ndarray:
+    """
+    1-D float32 (WAVE_W,): multiplied into bar heights so bars at the
+    edges of the scrolling window taper gracefully (0.35 → 1.0 → 0.35).
+    """
+    half  = WAVE_W // 2
+    left  = np.linspace(0.35, 1.0, half,           dtype=np.float32)
+    right = np.linspace(1.0, 0.35, WAVE_W - half,  dtype=np.float32)
+    return np.concatenate([left, right])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Per-frame renderer
+# Per-frame renderer (fully vectorised — no Python per-pixel loops)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_scanline_mult(H: int) -> np.ndarray:
-    """Float32 (H, 1, 1) multiplier: 0.82 every 3rd row, else 1.0."""
-    m = np.ones((H, 1, 1), dtype=np.float32)
-    m[::3] = 0.82
-    return m
-
-
-def _render_frame_animated(
-    played:   np.ndarray,
-    unplayed: np.ndarray,
-    ui_arr:   np.ndarray,
-    ui_mask:  np.ndarray,
-    scanline_mult: np.ndarray,
-    playhead_px: int,
-    MARGIN_X: int,
-    WAVE_W:   int,
-    H:        int,
-    W:        int,
+def _render_frame_scrolling(
+    bar_amps_padded:  np.ndarray,   # pre-computed amp array (padded)
+    amp_offset:       int,          # slice start in bar_amps_padded
+    fade_curve:       np.ndarray,   # (WAVE_W,) height taper
+    ui_arr:           np.ndarray,   # (H, W, 3) UI chrome
+    ui_mask:          np.ndarray,   # (H, W) bool
+    scanline_mult:    np.ndarray,   # (H, 1, 1) CRT dimming
+    dist_from_center: np.ndarray,   # (H, 1) precomputed |y - WAVE_CENTER|
+    played_col:       np.ndarray,   # (WAVE_W,) bool — True for left half
+    upcoming_col:     np.ndarray,   # (WAVE_W,) bool — True for right half
+    MARGIN_X:         int,
+    WAVE_W:           int,
+    WAVE_CENTER:      int,
+    WAVE_MAX_H:       int,
+    H:                int,
+    W:                int,
 ) -> np.ndarray:
-    """Render one video frame as a (H, W, 3) uint8 numpy array."""
+    """Render one scrolling-waveform video frame as a (H, W, 3) uint8 array."""
 
-    # Blend played (left) + unplayed (right)
-    arr = unplayed.copy()
-    if playhead_px > MARGIN_X:
-        arr[:, MARGIN_X:playhead_px] = played[:, MARGIN_X:playhead_px]
+    # ── Background + amplitude grid ───────────────────────────────────────────
+    arr = np.full((H, W, 3), _BG, dtype=np.uint8)
+    for pct in (0.25, 0.50, 0.75):
+        for sign in (1, -1):
+            gy = WAVE_CENTER + int(sign * pct * WAVE_MAX_H)
+            if 0 <= gy < H:
+                arr[gy, MARGIN_X:MARGIN_X + WAVE_W] = _GRID_LINE
+    arr[WAVE_CENTER, MARGIN_X:MARGIN_X + WAVE_W] = _GREEN_INNER
 
-    # Playhead scan line — 3px wide, centre is brightest
+    # ── Amplitude window + fade-tapered bar heights ───────────────────────────
+    window_amps = bar_amps_padded[amp_offset: amp_offset + WAVE_W]   # (WAVE_W,)
+    bh = np.maximum(1, (window_amps * fade_curve * WAVE_MAX_H).astype(int))  # (WAVE_W,)
+
+    # ── Vectorised glow masks (H × WAVE_W) ────────────────────────────────────
+    # dist_from_center is (H, 1); bh is (WAVE_W,) → both broadcast to (H, WAVE_W)
+    outer_mask = dist_from_center <= bh[np.newaxis, :] + 4   # (H, WAVE_W)
+    inner_mask = dist_from_center <= bh[np.newaxis, :] + 1
+    core_mask  = dist_from_center <= bh[np.newaxis, :]
+
+    # wv is a (H, WAVE_W, 3) view into arr — writes go directly into arr
+    wv = arr[:, MARGIN_X:MARGIN_X + WAVE_W]
+
+    # Upcoming bars — dim, no glow
+    wv[core_mask  & upcoming_col] = _GREEN_DIM
+
+    # Played bars — three-layer glow (outer painted first, core last)
+    wv[outer_mask & played_col]   = _GREEN_OUTER
+    wv[inner_mask & played_col]   = _GREEN_INNER
+    wv[core_mask  & played_col]   = _GREEN_CORE
+
+    # ── Centre playhead (fixed vertical line) ─────────────────────────────────
+    ctr = MARGIN_X + WAVE_W // 2
     for dx, col in ((0, _PLAYHEAD), (-1, _GREEN_INNER), (1, _GREEN_INNER)):
-        gx = playhead_px + dx
+        gx = ctr + dx
         if MARGIN_X <= gx < MARGIN_X + WAVE_W:
             arr[:, gx] = col
 
-    # CRT scanlines
+    # ── CRT scanlines ─────────────────────────────────────────────────────────
     arr = (arr.astype(np.float32) * scanline_mult).clip(0, 255).astype(np.uint8)
 
-    # Composite UI (badge / title / watermark) — no scanlines on top chrome
+    # ── UI chrome (no scanlines on badge / title / watermark) ─────────────────
     arr[ui_mask] = ui_arr[ui_mask]
 
     return arr
@@ -260,43 +298,46 @@ def _render_frame_animated(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate_video(
-    audio_path:    str,
-    output_path:   str  = 'out.mp4',
-    style:         str  = 'null',
-    resolution:    str  = '1280x720',
-    title:         str | None = None,
-    twitter:       bool = False,   # True → AAC 320k (social posting); False → ALAC lossless (default)
-    audio_bitrate: str  = '320k',  # only used when twitter=True
-    video_preset:  str  = 'fast',
-    verbose:       bool = False,
+    audio_path:     str,
+    output_path:    str  = 'out.mp4',
+    style:          str  = 'null',
+    resolution:     str  = '1280x720',
+    title:          str | None = None,
+    twitter:        bool = False,   # True → AAC 320k; False → ALAC lossless (default)
+    audio_bitrate:  str  = '320k',  # only used when twitter=True
+    video_preset:   str  = 'fast',
+    window_seconds: float = WINDOW_SECONDS,
+    verbose:        bool = False,
 ) -> str:
     """
     Generate an animated AudioCipher waveform video from an audio file.
 
-    The waveform plays through in real time: bars to the left of the playhead
-    glow bright green; bars to the right are dim. A scanning line marks the
-    current position.
+    The waveform scrolls left in real time: the centre playhead always marks
+    "now", bars to the left (played) glow bright green with a three-layer bloom,
+    bars to the right (upcoming) are dim green. Bars taper toward the edges of
+    the visible window for a natural fade effect.
 
     Args:
-        audio_path:    Input audio (WAV / MP3 / any ffmpeg-readable format)
-        output_path:   Output MP4 path  (default: out.mp4)
-        style:         Reserved for future visual styles
-        resolution:    Output resolution as 'WxH'  (default: 1280x720)
-        title:         Title text displayed top-left (e.g. "NULL")
-        twitter:       If True, encode audio as AAC 320k for Twitter/X posting.
-                       Default False = ALAC lossless — MP4 stays fully decodable.
-        audio_bitrate: AAC bitrate used only when twitter=True  (default: 320k)
-        video_preset:  libx264 preset: ultrafast / fast / medium
-        verbose:       Show ffmpeg stderr
+        audio_path:     Input audio (WAV / MP3 / any ffmpeg-readable format)
+        output_path:    Output MP4 path  (default: out.mp4)
+        style:          Reserved for future visual styles
+        resolution:     Output resolution as 'WxH'  (default: 1280x720)
+        title:          Title text displayed top-left (e.g. "NULL")
+        twitter:        If True, encode audio as AAC 320k for Twitter/X posting.
+                        Default False = ALAC lossless — MP4 stays fully decodable.
+        audio_bitrate:  AAC bitrate used only when twitter=True  (default: 320k)
+        video_preset:   libx264 preset: ultrafast / fast / medium
+        window_seconds: Seconds of audio visible in the scrolling window (default: 4)
+        verbose:        Show ffmpeg stderr
 
     Returns:
         Absolute path to the generated MP4.
 
-    Notes:
-        Default (twitter=False): ALAC lossless audio — decode directly with:
-            python3 audiocipher.py decode cipher.mp4
-        twitter=True: AAC lossy — HZAlpha survives; WaveSig/FSK/Morse do not.
-            Twitter also re-encodes on upload, adding a second lossy pass.
+    ⚠  Cipher mode compatibility with compressed audio:
+        HZAlpha  — survives AAC, Opus, and Telegram/Twitter re-encoding. ✓
+        WaveSig  — NOT safe with any lossy codec (46.875 Hz bin spacing). ✗
+        FSK/Morse — NOT safe with lossy codecs. ✗
+        → Use encode --mode hzalpha for any cipher you plan to share as a video.
     """
     if not check_ffmpeg():
         raise RuntimeError('ffmpeg not available. Run check_or_install_ffmpeg().')
@@ -308,6 +349,11 @@ def generate_video(
         W, H = map(int, resolution.lower().split('x'))
     except (ValueError, AttributeError):
         W, H = 1280, 720
+
+    MARGIN_X    = 56
+    WAVE_W      = W - 2 * MARGIN_X
+    WAVE_CENTER = H // 2
+    WAVE_MAX_H  = int(H * 0.30)
 
     # ── Load audio ────────────────────────────────────────────────────────────
     try:
@@ -327,6 +373,28 @@ def generate_video(
 
     print(f'→ {duration:.1f}s audio  ·  {total_frames} frames @ {FPS}fps', file=sys.stderr)
 
+    # ── Cipher mode warning ────────────────────────────────────────────────────
+    try:
+        _md_raw = b''
+        with open(audio_path, 'rb') as _f:
+            _md_raw = _f.read(2048)
+        _unsafe_mode = (
+            b'"mode": "ggwave"' in _md_raw or b'"mode":"ggwave"' in _md_raw
+            or b'"mode": "fsk"'  in _md_raw or b'"mode":"fsk"'   in _md_raw
+            or b'"mode": "morse"' in _md_raw or b'"mode":"morse"' in _md_raw
+        )
+    except Exception:
+        _unsafe_mode = False
+
+    if _unsafe_mode:
+        print(
+            '⚠  WaveSig / FSK / Morse cipher detected.\n'
+            '   These modes do NOT survive lossy codecs (AAC, Opus, Telegram re-encode).\n'
+            '   Re-encode with --mode hzalpha for a decodable video:\n'
+            '     python3 audiocipher.py encode "your message" --mode hzalpha',
+            file=sys.stderr,
+        )
+
     # ── Audio codec + decodability notice ─────────────────────────────────────
     if not twitter:
         print(
@@ -335,19 +403,7 @@ def generate_video(
             file=sys.stderr,
         )
     else:
-        # Warn if source mode won't survive AAC
-        try:
-            _md_raw = b''
-            with open(audio_path, 'rb') as _f:
-                _md_raw = _f.read(2048)
-            _lossy_unsafe = (
-                b'"mode": "ggwave"' in _md_raw or b'"mode":"ggwave"' in _md_raw
-                or b'"mode": "fsk"' in _md_raw or b'"mode": "morse"' in _md_raw
-            )
-        except Exception:
-            _lossy_unsafe = False
-
-        if _lossy_unsafe:
+        if _unsafe_mode:
             print(
                 '⚠  --twitter: AAC will corrupt WaveSig/FSK/Morse frequencies.\n'
                 '   Cipher CANNOT be decoded from this MP4.\n'
@@ -362,16 +418,23 @@ def generate_video(
                 file=sys.stderr,
             )
 
-    # ── Pre-render waveform layers ─────────────────────────────────────────────
-    print('→ Pre-rendering waveform layers…', file=sys.stderr)
-    played, unplayed, ui_arr, MARGIN_X, WAVE_W, WAVE_CENTER = _build_layers(
-        samples, sr, W=W, H=H, title=title,
+    # ── Pre-compute scrolling waveform data + UI ───────────────────────────────
+    print('→ Pre-computing waveform…', file=sys.stderr)
+    bar_amps_padded, samples_per_px, n_pixels = _precompute_amps_scrolling(
+        samples, sr, WAVE_W, window_seconds=window_seconds,
     )
-    ui_mask      = ui_arr.any(axis=2)          # True where UI pixels exist
-    scanline_mult = _make_scanline_mult(H)
+    ui_arr, ui_mask   = _precompute_ui(W, H, MARGIN_X, title)
+    fade_curve        = _make_fade_curve(WAVE_W)
+    scanline_mult     = _make_scanline_mult(H)
+
+    # Precompute per-frame-invariant arrays (avoid recreating each iteration)
+    dist_from_center  = np.abs(np.arange(H)[:, np.newaxis] - WAVE_CENTER).astype(np.int32)
+    half              = WAVE_W // 2
+    played_col        = np.zeros(WAVE_W, dtype=bool)
+    played_col[:half] = True
+    upcoming_col      = ~played_col
 
     # ── Open ffmpeg process (stdin = raw RGB24) ────────────────────────────────
-    # Audio: ALAC lossless by default (MP4 stays decodable); AAC when --twitter
     audio_args = (
         ['-c:a', 'aac', '-b:a', audio_bitrate]
         if twitter else
@@ -408,12 +471,19 @@ def generate_video(
     print('→ Rendering frames…', file=sys.stderr)
     try:
         for fi in range(total_frames):
-            frac        = fi / total_frames
-            playhead_px = MARGIN_X + int(frac * WAVE_W)
+            frac = fi / max(1, total_frames - 1)
 
-            frame = _render_frame_animated(
-                played, unplayed, ui_arr, ui_mask, scanline_mult,
-                playhead_px, MARGIN_X, WAVE_W, H, W,
+            # Map current playback position → slice offset in the padded amp array.
+            # At frac=0:   amp_offset = WAVE_W//2  (centre = padded[WAVE_W] = first sample)
+            # At frac=1:   amp_offset = WAVE_W//2 + n_pixels - 1
+            current_px = int(frac * max(0, n_pixels - 1))
+            amp_offset = half + current_px
+
+            frame = _render_frame_scrolling(
+                bar_amps_padded, amp_offset, fade_curve,
+                ui_arr, ui_mask, scanline_mult,
+                dist_from_center, played_col, upcoming_col,
+                MARGIN_X, WAVE_W, WAVE_CENTER, WAVE_MAX_H, H, W,
             )
             proc.stdin.write(frame.tobytes())
 
