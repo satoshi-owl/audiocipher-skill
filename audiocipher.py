@@ -19,7 +19,28 @@ import argparse
 import json
 import os
 import sys
+import tempfile
+import threading
 from pathlib import Path
+
+_VERSION_FILE = Path(__file__).parent / 'VERSION'
+_GITHUB_VERSION_URL = (
+    'https://raw.githubusercontent.com/satoshi-owl/audiocipher-skill/main/VERSION'
+)
+_update_available: list[str] = []   # populated by background thread
+
+
+def _bg_version_check() -> None:
+    """Fetch remote VERSION in background; append to _update_available if newer."""
+    try:
+        import urllib.request
+        local = _VERSION_FILE.read_text().strip() if _VERSION_FILE.exists() else '0.0.0'
+        with urllib.request.urlopen(_GITHUB_VERSION_URL, timeout=2) as r:
+            remote = r.read().decode().strip()
+        if remote != local:
+            _update_available.append(remote)
+    except Exception:
+        pass
 
 # Add skill/ directory to path so local imports work when called from anywhere
 sys.path.insert(0, str(Path(__file__).parent))
@@ -28,6 +49,23 @@ sys.path.insert(0, str(Path(__file__).parent))
 # ─────────────────────────────────────────────────────────────────────────────
 # Sub-command handlers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def cmd_update(args: argparse.Namespace):
+    import subprocess as _sp
+    skill_dir = str(Path(__file__).parent)
+    print('→ Pulling latest from origin/main…')
+    r = _sp.run(['git', '-C', skill_dir, 'pull', 'origin', 'main'],
+                capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f'✗ git pull failed:\n{r.stderr.strip()}', file=sys.stderr)
+        sys.exit(1)
+    print(r.stdout.strip() or '  Already up to date.')
+    print('→ Installing/updating dependencies…')
+    _sp.run(['pip3', 'install', '-r',
+             str(Path(skill_dir) / 'requirements.txt'), '-q'], check=True)
+    version = _VERSION_FILE.read_text().strip() if _VERSION_FILE.exists() else '?'
+    print(f'✓ AudioCipher skill updated to v{version}')
+
 
 def cmd_onboard(args: argparse.Namespace):
     from onboard import run_onboard  # type: ignore
@@ -64,6 +102,25 @@ def cmd_encode(args: argparse.Namespace):
 
 def cmd_decode(args: argparse.Namespace):
     from cipher import decode  # type: ignore
+    import shutil
+    import subprocess
+
+    audio_path = args.audio
+    tmp_wav    = None
+
+    # Auto-extract audio from video/container files (MP4, MOV, MKV, M4A…)
+    _VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.m4a', '.m4v', '.webm', '.avi')
+    if Path(audio_path).suffix.lower() in _VIDEO_EXTS:
+        if not shutil.which('ffmpeg'):
+            print('✗ ffmpeg required to decode from video files.', file=sys.stderr)
+            sys.exit(1)
+        fd, tmp_wav = tempfile.mkstemp(suffix='.wav')
+        os.close(fd)
+        subprocess.run(
+            ['ffmpeg', '-i', audio_path, '-vn', '-acodec', 'pcm_s16le', tmp_wav, '-y'],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        audio_path = tmp_wav
 
     kwargs: dict = {}
     if args.morse_wpm  is not None: kwargs['morse_wpm']  = args.morse_wpm
@@ -71,8 +128,12 @@ def cmd_decode(args: argparse.Namespace):
     if args.letter_gap is not None: kwargs['letter_gap_ms'] = args.letter_gap
     if args.word_gap   is not None: kwargs['word_gap_ms']   = args.word_gap
 
-    result = decode(args.audio, mode=args.mode, **kwargs)
-    print(result)
+    try:
+        result = decode(audio_path, mode=args.mode, **kwargs)
+        print(result)
+    finally:
+        if tmp_wav and os.path.exists(tmp_wav):
+            os.unlink(tmp_wav)
 
 
 def cmd_image2audio(args: argparse.Namespace):
@@ -128,6 +189,7 @@ def cmd_video(args: argparse.Namespace):
         style=args.style,
         resolution=args.resolution,
         title=args.title,
+        twitter=args.twitter,
         verbose=args.verbose,
     )
     size_mb = os.path.getsize(out) / (1024 * 1024)
@@ -177,6 +239,17 @@ Examples:
 """,
     )
     sub = p.add_subparsers(dest='command', required=True)
+
+    # ── update ────────────────────────────────────────────────────────────────
+    upd = sub.add_parser(
+        'update',
+        help='Pull latest skill version from GitHub.',
+        description=(
+            'Runs git pull origin main + pip3 install -r requirements.txt '
+            'to update the skill to the latest version.'
+        ),
+    )
+    upd.set_defaults(func=cmd_update)
 
     # ── onboard ───────────────────────────────────────────────────────────────
     onb = sub.add_parser(
@@ -322,6 +395,10 @@ Examples:
                      metavar='WxH', help='Output resolution (default: 1280x720)')
     vid.add_argument('--title', default=None,
                      metavar='TEXT', help='Optional title overlay text')
+    vid.add_argument('--twitter', action='store_true',
+                     help='Encode audio as AAC 320k for Twitter/X posting '
+                          '(lossy — HZAlpha survives; WaveSig/FSK/Morse may not). '
+                          'Default: ALAC lossless — MP4 stays fully decodable.')
     vid.add_argument('--verbose', action='store_true',
                      help='Show ffmpeg output')
     vid.set_defaults(func=cmd_video)
@@ -368,6 +445,13 @@ Examples:
 def main():
     parser = build_parser()
     args   = parser.parse_args()
+
+    # Background version check — skip for update/onboard to avoid noise
+    _ver_thread = None
+    if getattr(args, 'command', None) not in ('update', 'onboard'):
+        _ver_thread = threading.Thread(target=_bg_version_check, daemon=True)
+        _ver_thread.start()
+
     try:
         args.func(args)
     except KeyboardInterrupt:
@@ -379,6 +463,16 @@ def main():
             import traceback
             traceback.print_exc()
         sys.exit(1)
+
+    # Wait briefly for version check, then print notification if update available
+    if _ver_thread is not None:
+        _ver_thread.join(timeout=2.5)
+    if _update_available:
+        print(
+            f'\nℹ  Update available (v{_update_available[0]}) '
+            '→ python3 audiocipher.py update',
+            file=sys.stderr,
+        )
 
 
 if __name__ == '__main__':
