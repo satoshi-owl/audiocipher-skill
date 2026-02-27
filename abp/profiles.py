@@ -46,6 +46,16 @@ PROFILES: dict[str, dict] = {
         "interleave_depth": 4,     # burst tolerance: 4 × 8 = 32 bytes
         "compress_level":   1,
     },
+    # browser_safe: same strong FEC as social_safe but zstd compression is disabled.
+    # Use this when the recipient will decode in the AudioCipher browser app, which
+    # does not ship a zstd decompressor.  Longer WAV file, but fully browser-decodable.
+    "browser_safe": {
+        "rs_n":             255,
+        "rs_k":             223,   # RS(255,223): nsym=32, corrects ≤16 byte errors
+        "interleave_depth": 8,     # burst tolerance: 8 × 16 = 128 bytes
+        "compress_level":   0,     # informational only — compress=False disables zstd
+        "compress":         False, # ← skip zstd so browser can decode without WASM
+    },
 }
 DEFAULT_PROFILE = "social_safe"
 

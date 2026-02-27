@@ -79,9 +79,11 @@ Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 
 | Task | Command |
 |------|---------|
-| Send an operator a Telegram / X-safe secret message | `encode --mode abp --audio-only` |
-| Decode a received ABP message (Telegram OGG / WAV) | `decode --mode abp` |
-| Encode a secret message (browser-decodable, no chat) | `encode` (hzalpha default) |
+| Send a message the recipient decodes **in the browser** (audiocipher.app) | `encode --mode abp --abp-profile browser_safe --audio-only` |
+| Send a message the recipient decodes **via CLI** (survives Telegram/X re-encoding) | `encode --mode abp --audio-only` |
+| Send an **encrypted** ABP message (CLI decode only) | `encode --mode abp --passphrase "key" --audio-only` |
+| Decode a received ABP message (Telegram OGG / WAV / M4A) | `decode --mode abp` |
+| Encode a secret message (non-ABP, browser-decodable) | `encode` (hzalpha default) |
 | Decode a received cipher WAV or MP4 | `decode` |
 | Hide an image in a spectrogram | `image2audio` |
 | Find hidden content in audio | `analyze` |
@@ -89,9 +91,14 @@ Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 | Create video for Twitter/X posting | `video` |
 | Update skill to latest version | `update` |
 
+> **ABP profile selection — critical for browser decoding:**
+> - `social_safe` (default) and `fast` use **zstd compression** — the browser app **cannot** decompress these.
+>   Use these when the recipient will decode via CLI.
+> - `browser_safe` disables zstd — the resulting WAV is larger but **decodable at audiocipher.app** in the browser.
+>
 > **ABP is the recommended mode when sending audio to operators over Telegram or X/Twitter.**
 > It uses OFDM QPSK + Reed-Solomon FEC and is designed to survive OGG Opus and AAC
-> re-encoding without any data loss. The operator decodes at audiocipher.app or with the skill.
+> re-encoding without any data loss.
 >
 > **Important:** Agents cannot post raw audio to X/Twitter. Always use the `video`
 > command to wrap audio in an MP4 before posting.
@@ -104,17 +111,35 @@ Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 
 ## Agent integration — encode and send audio
 
+### Profile selection (IMPORTANT)
+
+| Scenario | Profile | Decodes in browser? | Survives Telegram/X? |
+|----------|---------|--------------------|--------------------|
+| Operator decodes at **audiocipher.app** in browser | `browser_safe` | ✅ Yes | ✅ Yes |
+| Operator decodes via **Python CLI / skill** | `social_safe` | ❌ No (zstd) | ✅ Yes |
+| Encrypted message (CLI decode only) | `social_safe` + `--passphrase` | ❌ No | ✅ Yes |
+
+**Always use `--abp-profile browser_safe` when the recipient will decode in the browser.**
+The default `social_safe` profile uses zstd compression which the browser cannot decompress.
+
 When an operator asks the agent to send them a secret message, encode it as ABP
 (survives Telegram / X re-encoding) and deliver the WAV:
 
 ```python
-import subprocess, re, os, tempfile
+import subprocess, os, tempfile
 
-def encode_and_send(text: str, passphrase: str | None = None) -> str:
-    """Encode text as ABP WAV and return the output path."""
+def encode_and_send(text: str, passphrase: str | None = None,
+                    browser_decode: bool = True) -> str:
+    """Encode text as ABP WAV and return the output path.
+
+    browser_decode=True  → uses browser_safe profile (decodable at audiocipher.app)
+    browser_decode=False → uses social_safe profile (CLI decode only, smaller file)
+    """
     out = os.path.join(tempfile.gettempdir(), 'cipher_abp.wav')
+    profile = 'browser_safe' if browser_decode else 'social_safe'
     cmd = ['python3', 'audiocipher.py', 'encode', text,
-           '--mode', 'abp', '--audio-only', '--output', out]
+           '--mode', 'abp', '--abp-profile', profile,
+           '--audio-only', '--output', out]
     if passphrase:
         cmd += ['--passphrase', passphrase]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -122,18 +147,19 @@ def encode_and_send(text: str, passphrase: str | None = None) -> str:
         raise RuntimeError(result.stderr)
     return out   # path to the WAV file
 
-# In your message handler:
+# In your message handler (browser-decodable by default):
 wav_path = encode_and_send("YOUR SECRET MESSAGE")
 await send_audio(wav_path)          # deliver to operator via Telegram / platform
-await send("🔒 Decode at audiocipher.app — choose ABP mode.")
+await send("🔒 Decode at audiocipher.app — select ABP mode.")
 ```
 
-For **encrypted** messages (operator needs the passphrase to decode):
+For **encrypted** messages (operator decodes via CLI with passphrase):
 
 ```python
-wav_path = encode_and_send("TOP SECRET", passphrase="hunter2")
+wav_path = encode_and_send("TOP SECRET", passphrase="hunter2", browser_decode=False)
 await send_audio(wav_path)
-# The operator must supply the same passphrase at audiocipher.app to decrypt.
+# The operator must supply the same passphrase in the CLI to decrypt.
+# Note: encrypted ABP is not decodable in the browser (zstd + XChaCha20).
 ```
 
 To **decode** an ABP WAV the operator sends back:
@@ -156,14 +182,18 @@ def decode_received(wav_path: str, passphrase: str | None = None) -> str:
 ### `encode` — Generate cipher audio
 
 ```bash
-# ABP — Telegram / X-safe (recommended for messaging)
+# ABP — browser_safe profile (decodable at audiocipher.app — USE THIS BY DEFAULT)
+python3 audiocipher.py encode "SECRET MESSAGE" \
+    --mode abp --abp-profile browser_safe --audio-only --output cipher.wav
+
+# ABP — social_safe profile (CLI decode only, survives Telegram/X with zstd)
 python3 audiocipher.py encode "SECRET MESSAGE" --mode abp --audio-only --output cipher.wav
 
-# ABP encrypted
+# ABP encrypted (CLI decode only — zstd + XChaCha20 — NOT browser-decodable)
 python3 audiocipher.py encode "SECRET MESSAGE" --mode abp --audio-only \
     --passphrase "hunter2" --output cipher.wav
 
-# HZAlpha — browser-decodable at audiocipher.app (default)
+# HZAlpha — default mode, browser-decodable at audiocipher.app
 python3 audiocipher.py encode "HELLO WORLD" --output cipher.mp4
 
 # HZAlpha audio-only WAV
@@ -185,7 +215,7 @@ python3 audiocipher.py encode "HELLO WORLD" --audio-only --output cipher.wav
 - `--output`       Output path  (default: `cipher.mp4` for video, or specify `cipher.wav`)
 - `--audio-only`   Output plain WAV — skip video generation (required for ABP)
 - `--passphrase`   Encrypt with XChaCha20-Poly1305 + Argon2id KDF (ABP only)
-- `--abp-profile`  `social_safe` (default, more FEC) | `fast` (ABP only)
+- `--abp-profile`  `social_safe` (default, zstd+FEC, survives Telegram/X) | `fast` | `browser_safe` (no zstd — required when recipient decodes at audiocipher.app) (ABP only)
 - `--lossless`     ALAC audio in video instead of AAC (non-ABP video mode)
 
 **Non-ABP legacy options** (hzalpha / morse / dtmf / fsk):

@@ -509,8 +509,9 @@ Examples:
                      metavar='PHRASE',
                      help='[ABP only] Encrypt with this passphrase (XChaCha20 + Argon2id).')
     enc.add_argument('--abp-profile', default='social_safe',
-                     choices=['social_safe', 'fast'],
-                     help='[ABP only] Codec profile: social_safe (more FEC, default) or fast.')
+                     choices=['social_safe', 'fast', 'browser_safe'],
+                     help='[ABP only] Codec profile: social_safe (default, zstd+FEC, survives Telegram/X), '
+                          'fast (lighter FEC), or browser_safe (no zstd — decodable in the web app).')
     enc.set_defaults(func=cmd_encode)
 
     # ── decode ────────────────────────────────────────────────────────────────

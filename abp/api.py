@@ -98,8 +98,9 @@ def encode_text(
     plaintext = text_norm.encode("utf-8")
     orig_len  = len(plaintext)
 
-    # 2. Compress
-    if encrypted or len(plaintext) > 64:  # always compress for encrypted; optional for short plain
+    # 2. Compress (skip if the profile sets compress=False — e.g. "browser_safe")
+    compress_enabled = prof.get("compress", True)
+    if compress_enabled and (encrypted or len(plaintext) > 64):
         body = compress(plaintext, level=prof["compress_level"])
         compressed = True
     else:
