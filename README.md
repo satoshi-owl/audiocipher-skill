@@ -5,31 +5,35 @@
 <h1 align="center">AudioCipher — Python CLI Skill</h1>
 
 <p align="center">
-  Hide messages in audio. Decode what you find. Post to X.
+  Encode secret messages as audio. Decode what you find. Post anywhere.
 </p>
 
 <p align="center">
   <a href="https://audiocipher.app">audiocipher.app</a> &nbsp;·&nbsp;
-  <a href="https://audiocipher.app/spectrogram">Spectrogram viewer</a>
+  <a href="https://github.com/satoshi-owl/audiocipher-skill">GitHub</a> &nbsp;·&nbsp;
+  <a href="https://audiocipher.app/llms.txt">llms.txt</a>
 </p>
 
 ---
 
-## What this lets you do
+## What this skill does
 
-- **Encode** a secret text message as an audio file using frequency-based ciphers
-- **Decode** a received WAV or MP4 back to plain text — including auto-detecting the cipher mode
-- **Hide an image inside audio** so it appears visually in a spectrogram (Aphex Twin technique)
-- **Analyze any audio** for hidden content: QR codes, embedded text, images, cipher tones, anomalies
-- **Render a spectrogram PNG** from any audio file for visual inspection
-- **Generate a branded MP4** from audio for posting to X/Twitter — ALAC lossless by default so the cipher stays decodable from the video file
-- **Self-update** — pull the latest version with one command; agents are notified automatically
+A Python CLI and library for encoding and decoding hidden messages in audio — and for wrapping results as MP4 video for social posting.
 
-Designed for use with OpenClaw agents. All decoders are direct Python ports of [audiocipher.app](https://audiocipher.app) — encode in the browser, decode in code, or vice versa.
+- **Encode** text as cipher audio using 8 frequency-based modes
+- **Decode** any WAV, MP4, OGG, or M4A back to plain text — auto-detects cipher mode
+- **ABP mode** — OFDM QPSK codec that survives Telegram (OGG Opus) and X/Twitter (AAC) re-encoding
+- **Analyze** any audio for hidden content: cipher tones, QR codes, embedded text, images
+- **Spectrogram** — render a frequency/time PNG from any audio file
+- **Image2audio** — hide an image inside audio so it appears in a spectrogram (Aphex Twin technique)
+- **Video** — wrap audio in a branded MP4 for posting to X/Twitter
+- **Self-update** — `python3 audiocipher.py update` pulls the latest version
+
+Cross-platform with [audiocipher.app](https://audiocipher.app) — encode in the browser, decode in Python, or vice versa.
 
 ---
 
-## Quick Install
+## Install
 
 ```bash
 git clone https://github.com/satoshi-owl/audiocipher-skill.git
@@ -37,113 +41,116 @@ cd audiocipher-skill
 bash install.sh
 ```
 
-Or manually:
+One-liner:
 
 ```bash
-pip3 install -r requirements.txt
-# System packages: ffmpeg, tesseract, zbar (see install.sh)
+curl -sSL https://audiocipher.app/install | bash
+```
+
+**Requires:** Python 3.9+, ffmpeg, tesseract, zbar (installed automatically by `install.sh`)
+
+---
+
+## Quick start
+
+```bash
+# Encode a message
+python3 audiocipher.py encode "HELLO WORLD" --output hello.wav
+
+# Decode it back
+python3 audiocipher.py decode hello.wav
+# → HELLO WORLD
+
+# ABP mode — survives Telegram/X re-encoding
+python3 audiocipher.py encode "SECRET" --mode abp --output msg.wav
+python3 audiocipher.py decode msg.wav --mode abp
+# → SECRET
+
+# ABP with passphrase (XChaCha20 encrypted)
+python3 audiocipher.py encode "SECRET" --mode abp --passphrase "hunter2" --output enc.wav
+python3 audiocipher.py decode enc.wav --mode abp --passphrase "hunter2"
+# → SECRET
+
+# Generate spectrogram
+python3 audiocipher.py spectrogram hello.wav --output spec.png --labeled
+
+# Post to X/Twitter — wrap as MP4 first
+python3 audiocipher.py video hello.wav --output hello.mp4 --twitter
 ```
 
 ---
 
-## Usage Examples
+## Cipher modes
 
-### Encode a secret message → decode it back
+| Mode | Flag | Frequency range | Notes |
+|------|------|----------------|-------|
+| HZAlphabet | `hzalpha` | 220–8372 Hz | Chromatic scale; A–Z, 0–9, symbols |
+| Morse Code | `morse` | Configurable | ITU timing; auto-detects tone on decode |
+| DTMF | `dtmf` | 697–1633 Hz | Standard dual-tone; decodes phone/IVR audio |
+| FSK Binary | `fsk` | 1000/1200 Hz | 45, 45.45 (RTTY), or 300 baud (Bell 103) |
+| GGWave | `ggwave` | 1875–6562 Hz | RS ECC; ggwave-js compatible |
+| AcDense | `acdense` | 300–8000 Hz | Multi-token OFDM bursts; high density |
+| HyperDense | `achd` | 300–8000 Hz | Double-channel AcDense |
+| **ABP** | `abp` | 300–8000 Hz | **OFDM QPSK + RS FEC + XChaCha20. Survives Telegram + X re-encoding.** |
+
+Encoded WAVs embed all cipher settings as metadata — `decode --mode auto` restores them automatically.
+
+---
+
+## All commands
+
+| Command | What it does |
+|---------|-------------|
+| `encode` | Encode text as cipher audio (WAV) |
+| `decode` | Decode WAV/MP4/OGG → plain text (auto-detects mode) |
+| `spectrogram` | Render frequency/time PNG from any audio |
+| `image2audio` | Hide an image inside audio (visible in spectrogram) |
+| `analyze` | Detect hidden content: cipher tones, QR codes, text, images |
+| `video` | Wrap audio in branded MP4 (ALAC lossless or AAC for Twitter) |
+| `update` | Pull latest version from GitHub + reinstall dependencies |
+
+### encode
 
 ```bash
-python3 audiocipher.py encode "HELLO WORLD" --output cipher.wav
-python3 audiocipher.py decode cipher.wav
-# → HELLO WORLD
+python3 audiocipher.py encode "HELLO" --output out.wav
+python3 audiocipher.py encode "HELLO" --mode morse --output morse.wav
+python3 audiocipher.py encode "HELLO" --mode abp --passphrase "secret" --output enc.wav
 ```
 
-### Hide an image in audio (visible in a spectrogram)
+Options: `--mode hzalpha|morse|dtmf|fsk|ggwave|acdense|achd|abp` · `--passphrase PHRASE` (ABP only) · `--abp-profile social_safe|fast` · `--duration-ms 120` · `--waveform sine|square|sawtooth` · `--volume 0.8`
+
+### decode
+
+```bash
+python3 audiocipher.py decode cipher.wav              # auto-detects mode
+python3 audiocipher.py decode cipher.mp4              # works directly on ALAC video
+python3 audiocipher.py decode received.ogg --mode abp # after Telegram re-encode
+python3 audiocipher.py decode received.ogg --mode abp --passphrase "secret"
+```
+
+### spectrogram
+
+```bash
+python3 audiocipher.py spectrogram audio.wav --output spec.png --colormap green --labeled
+```
+
+Options: `--colormap green|inferno|viridis|amber|grayscale` · `--fmin` · `--fmax` · `--width 1200` · `--height 600` · `--gain-db 0` · `--labeled`
+
+### image2audio
 
 ```bash
 python3 audiocipher.py image2audio logo.png --output hidden.wav --fmin 1000 --fmax 8000 --duration 8
-python3 audiocipher.py spectrogram hidden.wav --output spec.png --colormap green --labeled
-# Open spec.png — your image is in the audio
+python3 audiocipher.py spectrogram hidden.wav --output spec.png  # your image is in here
 ```
 
-### Analyze a mystery audio file for hidden content
+### analyze
 
 ```bash
 python3 audiocipher.py analyze mystery.wav --output-dir ./findings/
 cat findings/results.json
-# Detects: QR codes, embedded text, images, cipher tones, anomalies
-# Saves a cropped PNG per finding
 ```
 
-### Record a message, post to X, decode the MP4 directly
-
-```bash
-python3 audiocipher.py encode "NULL" --output null.wav
-# Default: ALAC lossless — cipher survives inside the video
-python3 audiocipher.py video null.wav --output null.mp4 --title "NULL"
-# Decode directly from the MP4 — no separate WAV needed
-python3 audiocipher.py decode null.mp4
-# → NULL
-
-# Use --twitter for AAC social posting (HZAlpha only — other modes may not survive)
-python3 audiocipher.py video null.wav --output null_tw.mp4 --title "NULL" --twitter
-```
-
-### Try every cipher mode
-
-```bash
-python3 audiocipher.py encode "AUDIOCIPHER" --mode morse  --output morse.wav
-python3 audiocipher.py encode "AUDIOCIPHER" --mode dtmf   --output dtmf.wav
-python3 audiocipher.py encode "AUDIOCIPHER" --mode fsk    --output fsk.wav
-
-python3 audiocipher.py decode morse.wav   # → AUDIOCIPHER
-python3 audiocipher.py decode dtmf.wav    # → AUDIOCIPHER
-python3 audiocipher.py decode fsk.wav     # → AUDIOCIPHER
-```
-
----
-
-## All Commands
-
-| Command | What it does |
-|---------|-------------|
-| `encode` | Encode a secret message as cipher audio (WAV) |
-| `decode` | Decode a cipher WAV or MP4 back to text |
-| `spectrogram` | Render a spectrogram PNG from any audio file |
-| `image2audio` | Hide an image inside a spectrogram |
-| `analyze` | Full detection pipeline — QR codes, text, images, cipher tones |
-| `video` | Wrap audio in a branded MP4 (ALAC lossless; decodable) |
-| `update` | Pull the latest version from GitHub |
-
-### encode
-```bash
-python3 audiocipher.py encode "HELLO WORLD" --output cipher.wav --mode hzalpha
-```
-Options: `--mode hzalpha|morse|dtmf|fsk` · `--duration-ms 120` · `--waveform sine|square|sawtooth|triangle` · `--volume 0.8`
-
-### decode
-```bash
-python3 audiocipher.py decode cipher.wav
-# --mode auto reads embedded WAV metadata automatically
-```
-
-### spectrogram
-```bash
-python3 audiocipher.py spectrogram mystery.wav --output spec.png --colormap green --labeled
-```
-Options: `--colormap green|inferno|viridis|amber|grayscale` · `--fmin` · `--fmax` · `--width 1200` · `--height 600` · `--gain-db 0` · `--labeled`
-
-### image2audio
-```bash
-python3 audiocipher.py image2audio logo.png --output hidden.wav --fmin 1000 --fmax 8000 --duration 8
-```
-Best clarity: `--fmin 1000 --fmax 8000 --duration 8`
-
-### analyze
-```bash
-python3 audiocipher.py analyze mystery.wav --output-dir ./findings/
-```
-
-Outputs `findings/results.json` + a cropped PNG per finding:
-
+Output:
 ```json
 {
   "type": "cipher_hzalpha",
@@ -155,89 +162,80 @@ Outputs `findings/results.json` + a cropped PNG per finding:
 ```
 
 ### video
+
 ```bash
-# Default: ALAC lossless audio — cipher is decodable directly from the MP4
-python3 audiocipher.py video cipher.wav --output cipher.mp4 --title "NULL"
-python3 audiocipher.py decode cipher.mp4   # works!
+# ALAC lossless — cipher decodes directly from the MP4
+python3 audiocipher.py video cipher.wav --output out.mp4 --title "NULL"
+python3 audiocipher.py decode out.mp4   # works
 
-# For Twitter/X: AAC 320k (HZAlpha survives; WaveSig/FSK/Morse do not)
-python3 audiocipher.py video cipher.wav --output cipher.mp4 --twitter
+# AAC for X/Twitter
+python3 audiocipher.py video cipher.wav --output out.mp4 --twitter
 ```
-Produces an animated 1280×720 H.264 MP4 — dark background, brand-green waveform glow, AUDIOCIPHER badge, `audiocipher.app` watermark. Twitter/X compatible.
 
-Options: `--twitter` (AAC for social posting) · `--resolution 1280x720` · `--title TEXT` · `--verbose`
-
-> **Always use `video` before posting audio to X — agents cannot post raw audio.**
+> Always use `video` before posting audio to X — agents cannot post raw audio files.
 
 ---
 
-## Encoding Modes
+## Agent integration
 
-| Mode | Frequency range | Notes |
-|------|----------------|-------|
-| HZ Alpha | 220 Hz – 8872 Hz | Chromatic scale; supports A–Z, 0–9, symbols |
-| Morse | User-defined tone | ITU timing; auto-detected on decode |
-| DTMF | 697 – 1633 Hz | T9 letter mapping; standard dual-tone pairs |
-| FSK | 1000 / 1200 Hz | ASCII → 8-bit; 300 baud default |
-| WaveSig | 1875 – 6562 Hz | RS(12,8) over GF(16); 6 simultaneous tones per frame |
+### Install from an agent
 
-Encoded WAVs include embedded JSON metadata so `decode --mode auto` restores parameters automatically.
+```bash
+git clone https://github.com/satoshi-owl/audiocipher-skill.git && bash audiocipher-skill/install.sh
+# or:
+curl -sSL https://audiocipher.app/install | bash
+```
 
----
+### Call from Python
 
-## Agent Integration (OpenClaw)
+```python
+import subprocess
 
-### Onboarding (runs exactly once)
+# Encode
+subprocess.run(['python3', 'audiocipher.py', 'encode', 'HELLO', '--output', 'out.wav'])
+
+# Decode → get text
+result = subprocess.run(['python3', 'audiocipher.py', 'decode', 'out.wav'],
+                        capture_output=True, text=True)
+message = result.stdout.strip()  # → "HELLO"
+
+# ABP encode with passphrase
+subprocess.run(['python3', 'audiocipher.py', 'encode', 'SECRET',
+                '--mode', 'abp', '--passphrase', 'hunter2', '--output', 'enc.wav'])
+
+# Video for X/Twitter
+subprocess.run(['python3', 'audiocipher.py', 'video', 'out.wav',
+                '--output', 'out.mp4', '--twitter'])
+```
+
+### Onboarding hook (runs once per install)
 
 ```python
 from onboard import is_complete, run_onboard
 
 if not is_complete():
     result = run_onboard(
-        operator_input=user_message,        # text the operator typed
-        operator_attachment=wav_file_path,  # WAV they attached, or None
+        operator_input=user_message,
+        operator_attachment=wav_file_path,  # or None
     )
     await send(result['message'])
     if result['attachment']:
         await send_audio(result['attachment'])
-    return  # resume normal command handling next turn
+    return
 ```
 
-State is persisted to `~/.audiocipher/onboard_state.json` — never re-triggers after completion.
+State saved to `~/.audiocipher/onboard_state.json` — never re-triggers after completion.
 
-### Calling commands from an agent
+### Auto-update
 
-```python
-import subprocess
-
-# Encode
-subprocess.run(['python3', 'audiocipher.py', 'encode', message, '--output', 'out.wav'])
-
-# Decode WAV or MP4 (ALAC video files decode directly — no separate WAV needed)
-result = subprocess.run(['python3', 'audiocipher.py', 'decode', 'out.wav'], capture_output=True, text=True)
-decoded_text = result.stdout.strip()
-
-# Video — ALAC lossless by default (cipher stays decodable from the MP4)
-subprocess.run(['python3', 'audiocipher.py', 'video', 'out.wav', '--output', 'out.mp4', '--title', 'NULL'])
-
-# For Twitter/X posting use --twitter (AAC, HZAlpha mode recommended)
-subprocess.run(['python3', 'audiocipher.py', 'video', 'out.wav', '--output', 'out.mp4', '--twitter'])
-```
-
-### Keeping the skill up to date
-
-The skill checks for updates silently after each command and prints a notification to stderr
-if a newer version is available:
+The skill checks for updates silently after each command:
 
 ```
-ℹ  Update available (v0.3.0) → python3 audiocipher.py update
+ℹ  Update available (v0.4.0) → python3 audiocipher.py update
 ```
-
-Agents and operators can update immediately:
 
 ```bash
-python3 audiocipher.py update
-# Pulls latest from GitHub + reinstalls dependencies
+python3 audiocipher.py update  # pulls latest + reinstalls deps
 ```
 
 ---
@@ -248,11 +246,20 @@ python3 audiocipher.py update
 |---------|---------|
 | numpy, scipy | DSP, FFT, waveform synthesis |
 | soundfile | WAV read/write |
-| librosa | High-quality STFT for spectrogram |
-| Pillow | Image I/O and spectrogram rendering |
-| opencv-python | Contour detection, morphological ops |
+| librosa | STFT for spectrogram |
+| Pillow | Image I/O and rendering |
+| opencv-python | Contour detection |
 | pyzbar | QR / barcode decoding |
 | pytesseract | OCR text extraction |
+| zstandard | zstd compression (ABP) |
+| argon2-cffi | Argon2id KDF (ABP encryption) |
+| PyNaCl | XChaCha20-Poly1305 (ABP encryption) |
 | ffmpeg (system) | Video generation |
 | tesseract (system) | OCR engine |
-| zbar (system) | QR library backend for pyzbar |
+| zbar (system) | QR library backend |
+
+---
+
+## Version
+
+Current: **v0.4.0** — See [SKILL.md](SKILL.md) for the full capability manifest.
