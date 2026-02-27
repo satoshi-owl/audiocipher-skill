@@ -24,28 +24,37 @@ import numpy as np
 import scipy.io.wavfile as _wavfile
 
 # ── locate abp package ────────────────────────────────────────────────────────
-# Layout on disk:
+# Preferred layout (bundled install):
+#   skill/
+#     abp/            ← abp package bundled alongside the skill files
+#     abp_bridge.py   ← __file__
+#
+# Fallback layout (local dev monorepo):
 #   audiocipher/
 #     skill/          ← __file__ lives here
 #     abp/
 #       abp/          ← the importable package
-#       tools/
-#       tests/
 #
-# We add audiocipher/abp/ (the repo root) to sys.path so `import abp` resolves.
+# We first try a direct `import abp` (works when skill/ is in sys.path, which
+# Python guarantees when running any script inside skill/).  If that fails we
+# add the sibling abp/ repo root to sys.path so `import abp` resolves from
+# the dev layout.
 
 _SKILL_DIR = Path(__file__).resolve().parent           # …/audiocipher/skill
-_ABP_REPO  = _SKILL_DIR.parent / 'abp'                # …/audiocipher/abp
 
-if not (_ABP_REPO / 'abp' / '__init__.py').exists():
-    raise ImportError(
-        f"ABP package not found at {_ABP_REPO / 'abp'}.\n"
-        "Expected layout: audiocipher/abp/abp/__init__.py\n"
-        "Make sure the abp/ repo is alongside skill/ in the audiocipher/ directory."
-    )
-
-if str(_ABP_REPO) not in sys.path:
-    sys.path.insert(0, str(_ABP_REPO))
+try:
+    import abp as _abp_pkg  # noqa: F401 — probe only
+except ImportError:
+    # Bundled package not importable yet — try the dev monorepo layout.
+    _ABP_REPO = _SKILL_DIR.parent / 'abp'              # …/audiocipher/abp
+    if not (_ABP_REPO / 'abp' / '__init__.py').exists():
+        raise ImportError(
+            "ABP package not found.\n"
+            "Run the skill installer (bash install.sh) to set up all dependencies,\n"
+            "or place the abp/ package alongside the skill files."
+        ) from None
+    if str(_ABP_REPO) not in sys.path:
+        sys.path.insert(0, str(_ABP_REPO))
 
 from abp import encode_text, decode_audio          # noqa: E402
 from abp.profiles import SR, PROFILES              # noqa: E402
