@@ -234,6 +234,238 @@ GF16._init()
 
 
 # ─────────────────────────────────────────────────────────────
+# Parameterized RS Codec over GF(16) for arbitrary (n, k)
+# Used by AcDense (RS(9,7)) — separate from the hardcoded GF16 class
+# ─────────────────────────────────────────────────────────────
+
+class RS_GF16:
+    """
+    Reed-Solomon codec over GF(16) for any valid (n, k) with n ≤ 15.
+    Used by AcDense mode: RS(9, 7) — 7 data nibbles + 2 parity per frame.
+      - corrects 1 symbol error per frame
+      - 9 symbols total = ACDENSE_N_TONES (one RS block per frame)
+    """
+
+    def __init__(self, n: int, k: int):
+        assert 1 <= k < n <= 15, f'RS({n},{k}) invalid for GF(16)'
+        assert (n - k) % 2 == 0, f'n-k must be even (got n-k={n-k})'
+        self.n        = n
+        self.k        = k
+        self.t        = (n - k) // 2   # error correction capability
+        self._g       = self._make_gen_poly()
+
+    def _make_gen_poly(self):
+        """Generator polynomial: product of (x + α^i) for i = 0 .. n-k-1."""
+        n_parity = self.n - self.k
+        g = [1]
+        for i in range(n_parity):
+            g = GF16._poly_mul(g, [GF16._exp[i], 1])
+        return g
+
+    def encode(self, data):
+        """
+        Systematic RS encode.
+        data: list of k GF(16) symbols (nibbles 0-15)
+        returns: list of n symbols = data[:k] + parity
+        """
+        n_parity = self.n - self.k
+        g = self._g
+        reg = [0] * n_parity
+        for d in data[:self.k]:
+            d = int(d) & 0xF
+            feedback = d ^ reg[0]
+            if feedback:
+                # In-place LFSR shift — safe because reg[i] reads reg[i+1]
+                # which has not yet been overwritten (process left to right).
+                for i in range(n_parity - 1):
+                    reg[i] = reg[i + 1] ^ GF16.mul(feedback, g[n_parity - 1 - i])
+                reg[n_parity - 1] = GF16.mul(feedback, g[0])
+            else:
+                for i in range(n_parity - 1):
+                    reg[i] = reg[i + 1]
+                reg[n_parity - 1] = 0
+        return [int(d) & 0xF for d in data[:self.k]] + reg
+
+    def decode(self, received):
+        """
+        RS decode. received: list of n GF(16) symbols.
+        Returns corrected data[:k], or uncorrected data[:k] if > t errors.
+        """
+        n_parity = self.n - self.k
+        r = [int(x) & 0xF for x in received[:self.n]]
+
+        # Compute syndromes via Horner's method
+        S = []
+        for i in range(n_parity):
+            val = 0
+            for j in range(self.n):
+                val = GF16.add(GF16.mul(val, GF16._exp[i]), r[j])
+            S.append(val)
+
+        if all(s == 0 for s in S):
+            return r[:self.k]
+
+        # Berlekamp-Massey
+        C, B, L, m, b = [1], [1], 0, 1, 1
+        for n_iter in range(n_parity):
+            d = S[n_iter]
+            for i in range(1, L + 1):
+                d ^= GF16.mul(C[i] if i < len(C) else 0, S[n_iter - i])
+            if d == 0:
+                m += 1
+                continue
+            T = [0] * max(len(C), len(B) + m)
+            for i in range(len(C)):
+                T[i] ^= C[i]
+            coeff = GF16.mul(d, GF16.inv(b))
+            for i in range(len(B)):
+                T[i + m] ^= GF16.mul(coeff, B[i])
+            if 2 * L <= n_iter:
+                B, L, b, m = C, n_iter + 1 - L, d, 1
+            else:
+                m += 1
+            C = T
+
+        if L > self.t:
+            return r[:self.k]   # too many errors — return uncorrected
+
+        # Chien search over the full GF(16) multiplicative group (order 15).
+        #
+        # With the Horner-reversed polynomial evaluation convention used here,
+        # an error at array position pos_arr contributes:
+        #   S_k = e * (alpha^k)^{n-1-pos_arr}   (Xi = alpha^{n-1-pos_arr})
+        # The error locator sigma(z) = 1 + Xi*z has root at z = Xi^{-1}.
+        # The Chien search evaluates sigma(alpha^chien_i) and finds the root
+        # at chien_i where alpha^chien_i = Xi^{-1} = alpha^{pos_arr-(n-1)}.
+        # This gives:   chien_i = (pos_arr - (n-1)) mod 15
+        # Inverse:   pos_arr = (chien_i + (n-1)) mod 15
+        #
+        # We must search all 15 elements of GF(16)* (not just range(n)),
+        # because for small n the valid roots may fall outside range(n).
+        err_pairs: list[tuple[int, int]] = []   # [(pos_arr, chien_i), ...]
+        for chien_i in range(15):
+            actual_pos = (chien_i + self.n - 1) % 15
+            if actual_pos >= self.n:
+                continue    # root maps outside the valid codeword range
+            val = 0
+            for j, cj in enumerate(C):
+                val ^= GF16.mul(cj, GF16._exp[(chien_i * j) % 15])
+            if val == 0:
+                err_pairs.append((actual_pos, chien_i))
+
+        if len(err_pairs) != L:
+            return r[:self.k]
+
+        # Forney algorithm using the error evaluator polynomial Omega.
+        #
+        # Standard formula:  e_j = X_j * Omega(X_j^{-1}) / sigma'(X_j^{-1})
+        #
+        # where:
+        #   X_j     = alpha^{n-1-p_j}  (error locator element, Xi in code)
+        #   X_j^{-1} = alpha^{chien_i}  (Xi_inv)
+        #   Omega(z) = S(z)*sigma(z) mod z^{n_parity}  (error evaluator)
+        #   sigma'(z) = formal derivative of sigma (in GF(2^m): drop even-degree terms)
+        #
+        # NOTE: the naive formula  num = sum S[i]*alpha^{chien_i*(i+1)}  always
+        # evaluates to 0 when n_parity is even, because S[i] = e*X^i causes
+        # every pair of terms to cancel in GF(2^m).  Use Omega instead.
+
+        # Step 1: compute Omega = conv(C, S) truncated to degree < n_parity
+        Omega = [0] * n_parity
+        for i in range(n_parity):
+            for j in range(min(i + 1, len(C))):
+                Omega[i] ^= GF16.mul(C[j], S[i - j])
+
+        # Step 2: formal derivative of sigma (in GF(2^m), only odd-degree survive)
+        #   sigma'[i] = C[i+1]  if  (i+1) is odd,  else 0
+        sigma_prime = [
+            C[i + 1] if (i + 1) < len(C) and (i + 1) % 2 == 1 else 0
+            for i in range(len(C) - 1)
+        ]
+
+        # Step 3: evaluate Omega and sigma' at Xi_inv for each error, apply correction
+        for actual_pos, chien_i in err_pairs:
+            Xi_inv = GF16._exp[chien_i]          # X_j^{-1} = alpha^{chien_i}
+            Xi     = GF16.inv(Xi_inv)             # X_j = alpha^{n-1-p_j}
+
+            # Horner evaluation of Omega(Xi_inv)
+            omega_val = 0
+            for coeff in reversed(Omega):
+                omega_val = GF16.add(GF16.mul(omega_val, Xi_inv), coeff)
+
+            # Horner evaluation of sigma'(Xi_inv)
+            sigma_p_val = 0
+            for coeff in reversed(sigma_prime):
+                sigma_p_val = GF16.add(GF16.mul(sigma_p_val, Xi_inv), coeff)
+
+            if sigma_p_val == 0:
+                return r[:self.k]
+
+            e = GF16.mul(Xi, GF16.mul(omega_val, GF16.inv(sigma_p_val)))
+            r[actual_pos] ^= e
+
+        return r[:self.k]
+
+
+# ─────────────────────────────────────────────────────────────
+# AcDense — High-density cipher constants
+#
+# AcDense uses 9 simultaneous tones (vs 6 for WaveSig) with
+# RS(9,7) per frame and zlib compression for Unicode/emoji support.
+#
+# Raw throughput:  7 nibbles / 192ms = 18.2 bytes/sec (compressed)
+# vs WaveSig:      4 bytes   / 192ms = 10.4 bytes/sec (uncompressed)
+# Effective gain:  ~6× for typical English text with zlib
+#
+# Frequency layout (9 tones × 16 positions × 100 Hz = 14.4 kHz range):
+#   Tone 0:  1000–2500 Hz
+#   Tone 1:  2600–4100 Hz
+#   ...
+#   Tone 8: 13800–15300 Hz
+#   Marker:  15600 Hz  (200 Hz clear gap above all data tones)
+# ─────────────────────────────────────────────────────────────
+
+ACDENSE_F0      = 1000    # Hz — same base as WaveSig
+ACDENSE_DF      = 100     # Hz — same bin spacing as WaveSig
+ACDENSE_N_TONES = 9       # simultaneous tones (vs 6 for WaveSig)
+ACDENSE_N_POS   = 16      # positions per tone (GF(16))
+ACDENSE_MARKER  = 15600   # Hz — preamble/postamble marker (unique to AcDense)
+# ACDENSE_MARKER = F0 + N_TONES*N_POS*DF + 200 = 1000 + 14400 + 200 = 15600 Hz
+
+ACDENSE_RS = RS_GF16(9, 7)   # RS(9,7): 7 data + 2 parity nibbles per frame
+#                                corrects 1 symbol (tone) error per frame
+
+
+# ─────────────────────────────────────────────────────────────
+# ACHD (AudioCipher HyperDense) constants
+# ─────────────────────────────────────────────────────────────
+# RS(15,11) over GF(16): 11 data + 4 parity nibbles per frame.
+# n=15 is the maximum RS codeword length over GF(16) (group order = 15).
+# Corrects up to 2 symbol errors per frame (vs 1 for AcDense).
+#
+# Frequency layout (15 tones × 16 positions × 75 Hz = 18000 Hz range):
+#   Tone n, position p: freq = 900 + (n×16 + p) × 75 Hz
+#   Tone 0:   900–2025 Hz
+#   Tone 14: 16725–17850 Hz
+#   Marker:  19200 Hz  (1350 Hz clear gap above data; < 22050 Hz Nyquist at 44.1 kHz)
+#
+# Throughput (typical English):
+#   Raw:       28.6 bytes/sec compressed (vs AcDense 18.2 bytes/sec)
+#   Effective: ~100 chars/sec after zlib (~1.57× AcDense)
+# ─────────────────────────────────────────────────────────────
+
+ACHD_F0      = 900     # Hz — base frequency
+ACHD_DF      = 75      # Hz — tone spacing (75 Hz fits 15 tones within 44.1 kHz)
+ACHD_N_TONES = 15      # simultaneous tones (maximum for GF(16) RS codeword)
+ACHD_N_POS   = 16      # positions per tone (GF(16))
+ACHD_MARKER  = 19200   # Hz — preamble/postamble marker (unique to ACHD)
+# ACHD_MARKER = 900 + 15×16×75 + 1350 = 900 + 18000 + 300 ≈ 19200 Hz
+
+ACHD_RS    = RS_GF16(15, 11)  # RS(15,11): 11 data + 4 parity; corrects 2 errors
+ACHD_MAGIC = bytes([0xAC, 0x1D])  # magic header bytes (AcDense uses 0xAC 0xDE)
+
+
+# ─────────────────────────────────────────────────────────────
 # FFT Helpers (ported from app.html lines 3552–3617)
 # ─────────────────────────────────────────────────────────────
 
