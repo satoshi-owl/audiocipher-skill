@@ -363,7 +363,7 @@ def save_spectrogram(
     )
 
     if labeled:
-        from PIL import ImageDraw, ImageFont  # type: ignore
+        from PIL import Image, ImageDraw, ImageFont  # type: ignore
         PAD_L, PAD_B, PAD_T, PAD_R = 56, 28, 12, 12
         samples, sr = read_wav(audio_path)
         duration = len(samples) / sr
