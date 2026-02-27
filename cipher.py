@@ -235,6 +235,34 @@ def _generate_tokens(text: str, mode: str, p: dict,
             GGWAVE_SAMPLES_PER_FRAME / GGWAVE_SAMPLE_RATE
         ) * 1000.0 * GGWAVE_FRAMES_PER_TX
 
+        # Normalise common Unicode → ASCII before encoding.
+        # WaveSig is byte-based (each char → two 4-bit nibbles); the decoder
+        # only passes through ASCII 32-127 + whitespace, so anything outside
+        # that range encodes to garbage and is silently dropped on decode.
+        _UNICODE_NORM = {
+            '\u2014': '--',   # em-dash        —  → --
+            '\u2013': '-',    # en-dash        –  → -
+            '\u201c': '"',    # left  "        "  → "
+            '\u201d': '"',    # right "        "  → "
+            '\u2018': "'",    # left  '        '  → '
+            '\u2019': "'",    # right '        '  → '
+            '\u2026': '...',  # ellipsis       …  → ...
+            '\u2022': '*',    # bullet         •  → *
+            '\u00b7': '.',    # middle dot     ·  → .
+            '\u00a9': '(c)',  # copyright      ©  → (c)
+            '\u00ae': '(r)',  # registered     ®  → (r)
+            '\u2122': '(tm)',# trademark      ™  → (tm)
+            '\u00b0': 'deg', # degree         °  → deg
+        }
+        norm_text = []
+        for ch in text:
+            if ch in _UNICODE_NORM:
+                norm_text.append(_UNICODE_NORM[ch])
+            elif ord(ch) < 128 or ch in ('\t', '\n', '\r'):
+                norm_text.append(ch)
+            # else: silently drop truly un-mappable non-ASCII
+        text = ''.join(norm_text)
+
         # Text → bytes → nibbles
         raw_nibbles: list[int] = []
         for ch in text:
@@ -279,6 +307,12 @@ def _generate_tokens(text: str, mode: str, p: dict,
             'freqs': [GGWAVE_MARKER_LO, GGWAVE_MARKER_HI],
             'ms': frame_dur_ms * 2.0,
         })
+        # Post-roll: 400 ms silence after the end marker.
+        # Mirrors the pre-roll in video.py.  AAC trims a few hundred samples
+        # from the stream end on every encode hop; this ensures the end marker
+        # always has a full frame group of breathing room regardless of message
+        # length, so the 2nd footer tone is never clipped by codec alignment.
+        tokens.append({'type': 'gap', 'ms': 400.0})
 
     return tokens
 
