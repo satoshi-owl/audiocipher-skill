@@ -78,6 +78,33 @@ def cmd_onboard(args: argparse.Namespace):
 
 
 def cmd_encode(args: argparse.Namespace):
+    # ── ABP path ──────────────────────────────────────────────────────────────
+    if args.mode == 'abp':
+        from abp_bridge import encode_abp, ABP_SR  # type: ignore
+        import scipy.io.wavfile as _wf
+
+        out_path = args.output
+        # Default output extension: .wav (ABP is always audio-only for now)
+        if not args.audio_only and not out_path.endswith('.wav'):
+            # Strip any .mp4 suffix the user may have passed
+            out_path = Path(out_path).with_suffix('.wav').as_posix()
+
+        passphrase  = getattr(args, 'passphrase', None)
+        abp_profile = getattr(args, 'abp_profile', 'social_safe') or 'social_safe'
+
+        print(f'→ ABP encode  profile={abp_profile}  '
+              f'encrypted={"yes" if passphrase else "no"}', file=sys.stderr)
+
+        samples = encode_abp(args.text, passphrase=passphrase, profile=abp_profile)
+        import numpy as _np
+        pcm = _np.clip(samples, -1.0, 1.0)
+        _wf.write(out_path, ABP_SR, (pcm * 32767).astype(_np.int16))
+        dur     = len(samples) / ABP_SR
+        size_kb = os.path.getsize(out_path) / 1024
+        print(f'✓ Saved: {out_path}  ({dur:.2f}s  {size_kb:.1f} KB, mode=abp)')
+        return
+
+    # ── Legacy cipher modes ───────────────────────────────────────────────────
     from cipher import write_cipher_wav  # type: ignore
 
     kwargs = {}
@@ -125,6 +152,22 @@ def cmd_encode(args: argparse.Namespace):
 
 
 def cmd_decode(args: argparse.Namespace):
+    # ── ABP path ──────────────────────────────────────────────────────────────
+    if args.mode == 'abp':
+        from abp_bridge import decode_abp  # type: ignore
+
+        passphrase = getattr(args, 'passphrase', None)
+        print(f'→ ABP decode  encrypted={"yes" if passphrase else "no"}',
+              file=sys.stderr)
+        try:
+            text = decode_abp(args.audio, passphrase=passphrase)
+            print(text)
+        except RuntimeError as exc:
+            print(f'✗ {exc}', file=sys.stderr)
+            sys.exit(1)
+        return
+
+    # ── Legacy cipher modes ───────────────────────────────────────────────────
     from cipher import decode  # type: ignore
     import shutil
     import subprocess
@@ -354,8 +397,11 @@ Examples:
   python3 audiocipher.py encode "HELLO WORLD"                     # → cipher.mp4 (video, default)
   python3 audiocipher.py encode "HELLO WORLD" --audio-only        # → cipher.wav (audio only)
   python3 audiocipher.py encode "Long text..." --mode achd         # → HyperDense video
+  python3 audiocipher.py encode "Secret" --mode abp --passphrase "hunter2"  # → ABP cipher.wav
   python3 audiocipher.py decode cipher.mp4                         # auto-detects mode from MP4
   python3 audiocipher.py decode cipher.wav --mode auto
+  python3 audiocipher.py decode received.ogg --mode abp            # ABP after Telegram re-encode
+  python3 audiocipher.py decode received.ogg --mode abp --passphrase "hunter2"
   python3 audiocipher.py image2audio logo.png --output hidden.wav --fmin 1000 --fmax 8000
   python3 audiocipher.py analyze mystery.wav --output-dir ./findings/
   python3 audiocipher.py spectrogram mystery.wav --output spec.png --colormap green --labeled
@@ -405,9 +451,10 @@ Examples:
     )
     enc.add_argument('text', help='Text to encode')
     enc.add_argument('--mode', default='hzalpha',
-                     choices=['hzalpha', 'morse', 'dtmf', 'fsk', 'ggwave', 'acdense', 'achd', 'custom'],
+                     choices=['hzalpha', 'morse', 'dtmf', 'fsk', 'ggwave', 'acdense', 'achd', 'abp', 'custom'],
                      help='Cipher mode (default: hzalpha). '
-                          'acdense = dense Unicode+emoji. achd = HyperDense long-text.')
+                          'acdense = dense Unicode+emoji. achd = HyperDense long-text. '
+                          'abp = ABP v1 OFDM (survives Telegram/X OGG Opus re-encode).')
     enc.add_argument('--output', '-o', default='cipher.mp4',
                      help='Output path (default: cipher.mp4). '
                           'Use --audio-only to write cipher.wav instead.')
@@ -435,6 +482,12 @@ Examples:
                      metavar='WPM', help='Morse words per minute (default: 20)')
     enc.add_argument('--fsk-baud', type=float, default=None,
                      metavar='BAUD', help='FSK baud rate (default: 45)')
+    enc.add_argument('--passphrase', '-p', default=None,
+                     metavar='PHRASE',
+                     help='[ABP only] Encrypt with this passphrase (XChaCha20 + Argon2id).')
+    enc.add_argument('--abp-profile', default='social_safe',
+                     choices=['social_safe', 'fast'],
+                     help='[ABP only] Codec profile: social_safe (more FEC, default) or fast.')
     enc.set_defaults(func=cmd_encode)
 
     # ── decode ────────────────────────────────────────────────────────────────
@@ -448,14 +501,18 @@ Examples:
     )
     dec.add_argument('audio', help='Input WAV file')
     dec.add_argument('--mode', default='auto',
-                     choices=['auto', 'hzalpha', 'morse', 'dtmf', 'fsk', 'ggwave', 'acdense', 'achd', 'custom'],
-                     help='Decode mode. "auto" reads embedded metadata or probes signal (default: auto)')
+                     choices=['auto', 'hzalpha', 'morse', 'dtmf', 'fsk', 'ggwave', 'acdense', 'achd', 'abp', 'custom'],
+                     help='Decode mode. "auto" reads embedded metadata or probes signal (default: auto). '
+                          'Use "abp" for ABP v1 OFDM files (WAV / OGG / M4A / MP3).')
     dec.add_argument('--morse-wpm', type=float, default=None,
                      metavar='WPM', help='Morse WPM override (default: from metadata or 20)')
     dec.add_argument('--fsk-baud', type=float, default=None,
                      metavar='BAUD', help='FSK baud rate override')
     dec.add_argument('--letter-gap', type=float, default=None, metavar='MS')
     dec.add_argument('--word-gap', type=float, default=None, metavar='MS')
+    dec.add_argument('--passphrase', '-p', default=None,
+                     metavar='PHRASE',
+                     help='[ABP only] Decryption passphrase (if message was encrypted).')
     dec.set_defaults(func=cmd_decode)
 
     # ── image2audio ───────────────────────────────────────────────────────────
