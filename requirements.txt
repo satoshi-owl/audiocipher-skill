@@ -9,6 +9,7 @@ scipy>=1.11
 reedsolo>=1.7        # Reed-Solomon FEC over GF(2^8)
 argon2-cffi>=21.3    # Argon2id KDF for ABP encryption
 PyNaCl>=1.5          # XChaCha20-Poly1305 authenticated encryption
+zstandard>=0.21      # zstd compression for ABP payload
 
 # Audio I/O
 soundfile>=0.12
