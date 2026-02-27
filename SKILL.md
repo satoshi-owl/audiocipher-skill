@@ -79,7 +79,9 @@ Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 
 | Task | Command |
 |------|---------|
-| Encode a secret message as audio | `encode` |
+| Send an operator a Telegram / X-safe secret message | `encode --mode abp --audio-only` |
+| Decode a received ABP message (Telegram OGG / WAV) | `decode --mode abp` |
+| Encode a secret message (browser-decodable, no chat) | `encode` (hzalpha default) |
 | Decode a received cipher WAV or MP4 | `decode` |
 | Hide an image in a spectrogram | `image2audio` |
 | Find hidden content in audio | `analyze` |
@@ -87,6 +89,10 @@ Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 | Create video for Twitter/X posting | `video` |
 | Update skill to latest version | `update` |
 
+> **ABP is the recommended mode when sending audio to operators over Telegram or X/Twitter.**
+> It uses OFDM QPSK + Reed-Solomon FEC and is designed to survive OGG Opus and AAC
+> re-encoding without any data loss. The operator decodes at audiocipher.app or with the skill.
+>
 > **Important:** Agents cannot post raw audio to X/Twitter. Always use the `video`
 > command to wrap audio in an MP4 before posting.
 >
@@ -96,17 +102,93 @@ Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 
 ---
 
+## Agent integration — encode and send audio
+
+When an operator asks the agent to send them a secret message, encode it as ABP
+(survives Telegram / X re-encoding) and deliver the WAV:
+
+```python
+import subprocess, re, os, tempfile
+
+def encode_and_send(text: str, passphrase: str | None = None) -> str:
+    """Encode text as ABP WAV and return the output path."""
+    out = os.path.join(tempfile.gettempdir(), 'cipher_abp.wav')
+    cmd = ['python3', 'audiocipher.py', 'encode', text,
+           '--mode', 'abp', '--audio-only', '--output', out]
+    if passphrase:
+        cmd += ['--passphrase', passphrase]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+    return out   # path to the WAV file
+
+# In your message handler:
+wav_path = encode_and_send("YOUR SECRET MESSAGE")
+await send_audio(wav_path)          # deliver to operator via Telegram / platform
+await send("🔒 Decode at audiocipher.app — choose ABP mode.")
+```
+
+For **encrypted** messages (operator needs the passphrase to decode):
+
+```python
+wav_path = encode_and_send("TOP SECRET", passphrase="hunter2")
+await send_audio(wav_path)
+# The operator must supply the same passphrase at audiocipher.app to decrypt.
+```
+
+To **decode** an ABP WAV the operator sends back:
+
+```python
+def decode_received(wav_path: str, passphrase: str | None = None) -> str:
+    cmd = ['python3', 'audiocipher.py', 'decode', wav_path, '--mode', 'abp']
+    if passphrase:
+        cmd += ['--passphrase', passphrase]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+    return result.stdout.strip()
+```
+
+---
+
 ## Commands
 
 ### `encode` — Generate cipher audio
 
 ```bash
-python3 audiocipher.py encode "HELLO WORLD" --output cipher.wav --mode hzalpha
+# ABP — Telegram / X-safe (recommended for messaging)
+python3 audiocipher.py encode "SECRET MESSAGE" --mode abp --audio-only --output cipher.wav
+
+# ABP encrypted
+python3 audiocipher.py encode "SECRET MESSAGE" --mode abp --audio-only \
+    --passphrase "hunter2" --output cipher.wav
+
+# HZAlpha — browser-decodable at audiocipher.app (default)
+python3 audiocipher.py encode "HELLO WORLD" --output cipher.mp4
+
+# HZAlpha audio-only WAV
+python3 audiocipher.py encode "HELLO WORLD" --audio-only --output cipher.wav
 ```
 
-**Options:**
-- `--mode`         `hzalpha` | `morse` | `dtmf` | `fsk` | `ggwave` | `custom`  (default: `hzalpha`)
-- `--output`       Output WAV path  (default: `cipher.wav`)
+**`--mode` options:**
+
+| Mode | Survives Telegram OGG? | Survives Twitter AAC? | Notes |
+|------|------------------------|----------------------|-------|
+| `abp` ✓ | ✓ Yes | ✓ Yes | Recommended for messaging. OFDM QPSK + RS FEC + optional XChaCha20 encryption |
+| `hzalpha` | ✗ No | ✗ No | Browser-decodable at audiocipher.app; use for WAV / ALAC MP4 only |
+| `ggwave` / `wavesig` | ✓ Yes | ✓ Yes | Legacy ggwave; limited payload size |
+| `morse` | ✗ No | ✗ No | Narrow-spaced tones; lossy codecs destroy them |
+| `dtmf` | ✗ No | ✗ No | Phone tones; not lossless-safe |
+| `fsk` | ✗ No | ✗ No | Narrow FSK; lossy codecs destroy them |
+
+**Common options:**
+- `--output`       Output path  (default: `cipher.mp4` for video, or specify `cipher.wav`)
+- `--audio-only`   Output plain WAV — skip video generation (required for ABP)
+- `--passphrase`   Encrypt with XChaCha20-Poly1305 + Argon2id KDF (ABP only)
+- `--abp-profile`  `social_safe` (default, more FEC) | `fast` (ABP only)
+- `--lossless`     ALAC audio in video instead of AAC (non-ABP video mode)
+
+**Non-ABP legacy options** (hzalpha / morse / dtmf / fsk):
 - `--duration-ms`  Tone duration ms  (default: 120)
 - `--letter-gap`   Inter-letter silence ms  (default: 20)
 - `--word-gap`     Inter-word silence ms  (default: 350)
@@ -117,29 +199,38 @@ python3 audiocipher.py encode "HELLO WORLD" --output cipher.wav --mode hzalpha
 - `--morse-wpm`    Morse words per minute  (default: 20)
 - `--fsk-baud`     FSK baud rate  (default: 300)
 
-The output WAV contains embedded JSON metadata so `decode --mode auto` can
-automatically restore mode and parameters.
+Non-ABP WAVs contain embedded JSON metadata so `decode --mode auto` restores
+mode and parameters automatically.
 
 ---
 
 ### `decode` — Extract message from audio
 
 ```bash
+# ABP (Telegram OGG, Twitter M4A, or original WAV)
+python3 audiocipher.py decode received.ogg --mode abp
+python3 audiocipher.py decode received.m4a --mode abp
+python3 audiocipher.py decode cipher.wav   --mode abp
+
+# ABP encrypted
+python3 audiocipher.py decode cipher.wav --mode abp --passphrase "hunter2"
+
+# HZAlpha / auto-detect (non-ABP)
 python3 audiocipher.py decode cipher.wav
-# Decode directly from an MP4 (ALAC audio, no quality loss):
-python3 audiocipher.py decode cipher.mp4
-# or with explicit mode:
+python3 audiocipher.py decode cipher.mp4      # extract audio from MP4 first
 python3 audiocipher.py decode cipher.wav --mode hzalpha
 ```
 
-Accepts WAV, MP4, MOV, MKV, M4A, and other ffmpeg-readable formats.
+Accepts WAV, OGG, M4A, MP3, MP4, MOV, MKV and any other ffmpeg-readable format.
 When given a video file, the audio track is extracted automatically.
 
 **Options:**
-- `--mode`      `auto` | `hzalpha` | `morse` | `dtmf` | `fsk` | `ggwave` | `custom`
-  - `auto` reads embedded WAV metadata to restore mode + params automatically
-- `--morse-wpm` Morse WPM (override metadata)
-- `--fsk-baud`  FSK baud rate (override metadata)
+- `--mode`        `abp` | `auto` | `hzalpha` | `morse` | `dtmf` | `fsk` | `ggwave`
+  - `abp`  — ABP v1 OFDM decoder (use for Telegram/X received audio)
+  - `auto` — reads embedded WAV metadata to restore mode + params (non-ABP)
+- `--passphrase`  Decryption passphrase (ABP encrypted messages only)
+- `--morse-wpm`   Morse WPM (override metadata)
+- `--fsk-baud`    FSK baud rate (override metadata)
 
 Prints decoded text to **stdout**.
 
@@ -247,7 +338,7 @@ Generates an animated 1280×720 H.264 MP4 with:
 - `#00FF88` brand-green animated waveform — played bars glow bright, unplayed bars dim, scanning playhead
 - Three-layer glow (outer bloom → inner → bright core) on played bars
 - CRT scanline overlay + subtle amplitude grid
-- `AUDIOCIPHER` logo badge (top-right) + `audiocipher.app` watermark (bottom-right)
+- `AUDIOCIPHER.APP` logo badge (top-right) + `audiocipher.app` watermark (bottom-right)
 - Optional title text overlay (off-white, top-left)
 
 **Audio codec:**
@@ -285,15 +376,16 @@ one-line notification to stderr if a newer version is available:
 
 ## Algorithm notes
 
-| Mode | Frequency range | Key detail |
-|------|----------------|------------|
-| HZ Alpha | 220 Hz – 8872 Hz | Chromatic scale; SHIFT marker (8869.84 Hz) for lowercase |
-| Morse | User-defined tone | Auto-detects Morse frequency; ITU timing ratios |
-| DTMF | 697–1633 Hz | T9 mapping for letters; standard ITU-T dual-tone pairs |
-| FSK | 1000 Hz / 1200 Hz | ASCII → 8-bit big-endian; configurable baud (default 300); Goertzel with zero-padding for short windows |
-| WaveSig | 1875–6562 Hz | RS(12,8) over GF(16); 6 simultaneous tones per frame |
+| Mode | Frequency range | Telegram-safe | Key detail |
+|------|----------------|:---:|------------|
+| **ABP v1** | 0–24 kHz (OFDM) | ✓ | OFDM QPSK · RS FEC · XChaCha20 encryption · zstd compression · 400 ms chirp preamble sync |
+| HZAlpha | 220 Hz – 8872 Hz | ✗ | Chromatic scale; SHIFT marker (8869.84 Hz) for lowercase |
+| Morse | User-defined tone | ✗ | Auto-detects Morse frequency; ITU timing ratios |
+| DTMF | 697–1633 Hz | ✗ | T9 mapping for letters; standard ITU-T dual-tone pairs |
+| FSK | 1000 Hz / 1200 Hz | ✗ | ASCII → 8-bit big-endian; configurable baud (default 300); Goertzel with zero-padding for short windows |
+| WaveSig | 1875–6562 Hz | ✓ | RS(12,8) over GF(16); 6 simultaneous tones per frame |
 
-All decode functions are direct ports of the browser-side JavaScript decoders
+Non-ABP decode functions are direct ports of the browser-side JavaScript decoders
 in `app.html`. Encode → decode round-trips produce identical text.
 
 ---
@@ -309,6 +401,10 @@ in `app.html`. Encode → decode round-trips produce identical text.
 | opencv-python | Contour detection, morphological ops |
 | pyzbar | QR / barcode decoding |
 | pytesseract | OCR text extraction |
-| ffmpeg (system) | Video generation |
+| reedsolo | Reed-Solomon FEC (ABP) |
+| argon2-cffi | Argon2id key derivation (ABP encryption) |
+| PyNaCl | XChaCha20-Poly1305 AEAD (ABP encryption) |
+| zstandard | zstd payload compression (ABP) |
+| ffmpeg (system) | Video generation, audio transcoding |
 | tesseract (system) | OCR engine |
 | zbar (system) | QR library backend for pyzbar |
