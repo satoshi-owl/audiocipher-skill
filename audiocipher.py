@@ -4,8 +4,8 @@ audiocipher.py — AudioCipher CLI entry point.
 
 Commands:
   onboard               Run first-use onboarding flow (outputs JSON)
-  encode      <text>    Generate cipher audio WAV
-  decode      <audio>   Decode cipher audio to text
+  encode      <text>    Generate cipher video MP4 (default) or WAV (--audio-only)
+  decode      <audio>   Decode cipher audio/video to text
   image2audio <image>   Convert image to audio (spectrogram technique)
   analyze     <audio>   Find hidden content in audio spectrogram
   spectrogram <audio>   Render a spectrogram PNG from audio
@@ -91,13 +91,37 @@ def cmd_encode(args: argparse.Namespace):
     if args.fsk_baud     is not None: kwargs['fsk_baud']      = args.fsk_baud
     kwargs['waveform'] = args.waveform
 
-    write_cipher_wav(
-        args.output, args.text,
-        mode=args.mode,
-        **kwargs,
-    )
-    size_kb = os.path.getsize(args.output) / 1024
-    print(f'✓ Saved: {args.output}  ({size_kb:.1f} KB, mode={args.mode})')
+    if args.audio_only:
+        # WAV-only mode: write audio directly to output
+        write_cipher_wav(args.output, args.text, mode=args.mode, **kwargs)
+        size_kb = os.path.getsize(args.output) / 1024
+        print(f'✓ Saved: {args.output}  ({size_kb:.1f} KB, mode={args.mode})')
+    else:
+        # Video-first (default): encode → temp WAV → branded MP4 → delete WAV
+        from video import check_or_install_ffmpeg, generate_video  # type: ignore
+
+        if not check_or_install_ffmpeg():
+            print(
+                '✗ ffmpeg required for video output. Use --audio-only for WAV.',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        fd, tmp_wav = tempfile.mkstemp(suffix='_ac.wav')
+        os.close(fd)
+        try:
+            write_cipher_wav(tmp_wav, args.text, mode=args.mode, **kwargs)
+            generate_video(
+                tmp_wav,
+                output_path=args.output,
+                twitter=(not args.lossless),   # default: AAC 320k (browser-compatible)
+            )
+        finally:
+            if os.path.exists(tmp_wav):
+                os.unlink(tmp_wav)
+
+        size_mb = os.path.getsize(args.output) / (1024 * 1024)
+        print(f'✓ Saved: {args.output}  ({size_mb:.1f} MB, mode={args.mode})')
 
 
 def cmd_decode(args: argparse.Namespace):
@@ -327,9 +351,11 @@ Examples:
   python3 audiocipher.py onboard
   python3 audiocipher.py onboard --input "I found it, it says AUDIOCIPHER"
   python3 audiocipher.py onboard --input "here's my wav" --attachment operator.wav
-  python3 audiocipher.py encode "HELLO WORLD" --output cipher.wav
-  python3 audiocipher.py decode cipher.wav
-  python3 audiocipher.py decode mystery.wav --mode auto
+  python3 audiocipher.py encode "HELLO WORLD"                     # → cipher.mp4 (video, default)
+  python3 audiocipher.py encode "HELLO WORLD" --audio-only        # → cipher.wav (audio only)
+  python3 audiocipher.py encode "Long text..." --mode achd         # → HyperDense video
+  python3 audiocipher.py decode cipher.mp4                         # auto-detects mode from MP4
+  python3 audiocipher.py decode cipher.wav --mode auto
   python3 audiocipher.py image2audio logo.png --output hidden.wav --fmin 1000 --fmax 8000
   python3 audiocipher.py analyze mystery.wav --output-dir ./findings/
   python3 audiocipher.py spectrogram mystery.wav --output spec.png --colormap green --labeled
@@ -370,15 +396,26 @@ Examples:
     # ── encode ────────────────────────────────────────────────────────────────
     enc = sub.add_parser(
         'encode',
-        help='Encode text as cipher audio WAV.',
-        description='Encode text to audio. Mode-specific params embedded in WAV metadata.',
+        help='Encode text as branded cipher video MP4 (default) or WAV (--audio-only).',
+        description=(
+            'Encode text to audio and wrap it in an AudioCipher-branded waveform video. '
+            'Mode-specific params are embedded in the output for auto-detection on decode. '
+            'Use --audio-only to output a plain WAV file instead of video.'
+        ),
     )
     enc.add_argument('text', help='Text to encode')
     enc.add_argument('--mode', default='hzalpha',
-                     choices=['hzalpha', 'morse', 'dtmf', 'fsk', 'ggwave', 'custom'],
-                     help='Cipher mode (default: hzalpha)')
-    enc.add_argument('--output', '-o', default='cipher.wav',
-                     help='Output WAV path (default: cipher.wav)')
+                     choices=['hzalpha', 'morse', 'dtmf', 'fsk', 'ggwave', 'acdense', 'achd', 'custom'],
+                     help='Cipher mode (default: hzalpha). '
+                          'acdense = dense Unicode+emoji. achd = HyperDense long-text.')
+    enc.add_argument('--output', '-o', default='cipher.mp4',
+                     help='Output path (default: cipher.mp4). '
+                          'Use --audio-only to write cipher.wav instead.')
+    enc.add_argument('--audio-only', action='store_true',
+                     help='Output WAV audio only — skip video generation.')
+    enc.add_argument('--lossless', action='store_true',
+                     help='Use ALAC lossless audio in video (default: AAC 320k). '
+                          'ALAC files may not decode in Firefox/Linux on the website.')
     enc.add_argument('--duration-ms', type=float, default=None,
                      metavar='MS', help='Tone duration in ms (default: 120)')
     enc.add_argument('--letter-gap', type=float, default=None,
@@ -411,8 +448,8 @@ Examples:
     )
     dec.add_argument('audio', help='Input WAV file')
     dec.add_argument('--mode', default='auto',
-                     choices=['auto', 'hzalpha', 'morse', 'dtmf', 'fsk', 'ggwave', 'custom'],
-                     help='Decode mode. "auto" reads embedded metadata (default: auto)')
+                     choices=['auto', 'hzalpha', 'morse', 'dtmf', 'fsk', 'ggwave', 'acdense', 'achd', 'custom'],
+                     help='Decode mode. "auto" reads embedded metadata or probes signal (default: auto)')
     dec.add_argument('--morse-wpm', type=float, default=None,
                      metavar='WPM', help='Morse WPM override (default: from metadata or 20)')
     dec.add_argument('--fsk-baud', type=float, default=None,
