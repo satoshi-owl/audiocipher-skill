@@ -118,6 +118,18 @@ def cmd_encode(args: argparse.Namespace):
     if args.fsk_baud     is not None: kwargs['fsk_baud']      = args.fsk_baud
     kwargs['waveform'] = args.waveform
 
+    # If the output path ends in .wav, force audio-only regardless of the flag.
+    # ffmpeg silently accepts a .wav output path, drops the video stream, and
+    # re-encodes the audio as AAC — destroying cipher fidelity.  Catch it here
+    # so the user always gets a lossless PCM WAV when they name the file .wav.
+    if not args.audio_only and args.output.lower().endswith('.wav'):
+        print(
+            '⚠  Output is .wav — switching to --audio-only (video containers '
+            'cannot be .wav; use .mp4 for video output).',
+            file=sys.stderr,
+        )
+        args.audio_only = True
+
     if args.audio_only:
         # WAV-only mode: write audio directly to output
         write_cipher_wav(args.output, args.text, mode=args.mode, **kwargs)

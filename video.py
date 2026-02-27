@@ -547,5 +547,8 @@ def generate_video_safe(
     try:
         return generate_video(audio_path, output_path, **kwargs)
     except Exception as e:
-        print(f'⚠ video generation failed: {e}', file=sys.stderr)
+        try:
+            print(f'⚠ video generation failed: {e}', file=sys.stderr)
+        except Exception:
+            pass
         return None
