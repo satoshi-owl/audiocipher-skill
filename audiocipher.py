@@ -125,7 +125,7 @@ def cmd_encode(args: argparse.Namespace):
         print(f'✓ Saved: {args.output}  ({size_kb:.1f} KB, mode={args.mode})')
     else:
         # Video-first (default): encode → temp WAV → branded MP4 → delete WAV
-        from video import check_or_install_ffmpeg, generate_video  # type: ignore
+        from video import check_or_install_ffmpeg, generate_video_safe  # type: ignore
 
         if not check_or_install_ffmpeg():
             print(
@@ -138,17 +138,28 @@ def cmd_encode(args: argparse.Namespace):
         os.close(fd)
         try:
             write_cipher_wav(tmp_wav, args.text, mode=args.mode, **kwargs)
-            generate_video(
+            result = generate_video_safe(
                 tmp_wav,
                 output_path=args.output,
                 twitter=(not args.lossless),   # default: AAC 320k (browser-compatible)
             )
+            if result is None:
+                # Video generation failed — fall back to saving the WAV
+                wav_path = str(Path(args.output).with_suffix('.wav'))
+                import shutil as _shutil
+                _shutil.copy2(tmp_wav, wav_path)
+                size_kb = os.path.getsize(wav_path) / 1024
+                print(
+                    f'⚠ Video failed; WAV saved: {wav_path}  ({size_kb:.1f} KB, mode={args.mode})',
+                    file=sys.stderr,
+                )
+                print(f'✓ Saved: {wav_path}  ({size_kb:.1f} KB, mode={args.mode})')
+            else:
+                size_mb = os.path.getsize(args.output) / (1024 * 1024)
+                print(f'✓ Saved: {args.output}  ({size_mb:.1f} MB, mode={args.mode})')
         finally:
             if os.path.exists(tmp_wav):
                 os.unlink(tmp_wav)
-
-        size_mb = os.path.getsize(args.output) / (1024 * 1024)
-        print(f'✓ Saved: {args.output}  ({size_mb:.1f} MB, mode={args.mode})')
 
 
 def cmd_decode(args: argparse.Namespace):

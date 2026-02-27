@@ -107,7 +107,7 @@ def _load_font(size: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _draw_logo_badge(draw, right_x: int, top_y: int, font_sm) -> None:
-    BADGE_W, BADGE_H, RADIUS = 190, 30, 6
+    BADGE_W, BADGE_H, RADIUS = 230, 30, 6
     bx = right_x - BADGE_W
     by = top_y
     try:
@@ -129,7 +129,7 @@ def _draw_logo_badge(draw, right_x: int, top_y: int, font_sm) -> None:
     dot_cx, dot_cy = bx + 16, by + BADGE_H // 2
     draw.ellipse([(dot_cx - DOT_R, dot_cy - DOT_R), (dot_cx + DOT_R, dot_cy + DOT_R)],
                  fill=_GREEN_CORE)
-    draw.text((bx + 28, by + BADGE_H // 2 - 7), 'AUDIOCIPHER', fill=_GREEN_CORE, font=font_sm)
+    draw.text((bx + 28, by + BADGE_H // 2 - 7), 'AUDIOCIPHER.APP', fill=_GREEN_CORE, font=font_sm)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
