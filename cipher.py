@@ -1441,6 +1441,41 @@ def _encode_achd(text: str, sr: int, volume: float) -> np.ndarray:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# DECODE — ABP probe (chirp cross-correlation)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _probe_abp(samples: np.ndarray, sr: int) -> bool:
+    """Detect ABP by cross-correlating against the known chirp preamble.
+
+    The ABP chirp sweeps 797 → 3563 Hz over 0.5 s (24 000 samples at 48 kHz).
+    This is distinct from every other AudioCipher mode.  Uses the same
+    normalised-xcorr template matcher as the ABP decoder itself, so false
+    positives are extremely rare even after AAC re-encoding.
+    """
+    try:
+        from abp.profiles import SR as ABP_SR, CHIRP_LEN     # type: ignore
+        from abp.modem.sync import detect as _chirp_detect    # type: ignore
+
+        min_len = int(CHIRP_LEN * sr / ABP_SR)
+        if len(samples) < min_len:
+            return False
+
+        s = samples.astype(np.float32)
+        # Linear interpolation resample to ABP_SR when needed
+        if sr != ABP_SR:
+            new_len = int(round(len(s) * ABP_SR / sr))
+            s = np.interp(
+                np.linspace(0, len(s) - 1, new_len),
+                np.arange(len(s)),
+                s,
+            ).astype(np.float32)
+
+        return _chirp_detect(s) is not None
+    except Exception:
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # DECODE — ACHD probe + decoder
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1630,7 +1665,8 @@ def decode(audio_path: str, mode: str = 'auto',
                     p[py_key] = v
         else:
             # No embedded metadata — probe spectral fingerprints.
-            # Priority: ACHD (19200 Hz) → AcDense (15600 Hz) → WaveSig (10800 Hz) → HZAlpha.
+            # Priority: ACHD (19200 Hz) → AcDense (15600 Hz) → WaveSig (10800 Hz)
+            #           → ABP (chirp preamble 797–3563 Hz) → HZAlpha (fallback).
             # All markers survive AAC re-encoding on Twitter.
             if _probe_achd(samples, sr):
                 mode = 'achd'
@@ -1638,6 +1674,8 @@ def decode(audio_path: str, mode: str = 'auto',
                 mode = 'acdense'
             elif _probe_ggwave(samples, sr):
                 mode = 'ggwave'
+            elif _probe_abp(samples, sr):
+                mode = 'abp'
             else:
                 mode = 'hzalpha'
 
@@ -1655,5 +1693,9 @@ def decode(audio_path: str, mode: str = 'auto',
         return _decode_acdense(samples, sr)
     elif mode == 'achd':
         return _decode_achd(samples, sr)
+    elif mode == 'abp':
+        # Delegate to abp_bridge which handles its own WAV reading + OFDM decode.
+        from abp_bridge import decode_abp  # type: ignore
+        return decode_abp(audio_path)
     else:
         return f'(unknown mode: {mode})'
