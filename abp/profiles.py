@@ -92,11 +92,11 @@ CHIRP_DURATION = 0.5                           # seconds
 CHIRP_LEN      = int(SR * CHIRP_DURATION)      # 24 000 samples
 CHIRP_F0       = float(BIN_LO * SR / FFT_N)   # 796.875 Hz — aligned to BIN_LO
 CHIRP_F1       = float(BIN_HI * SR / FFT_N)   # 3562.5  Hz — aligned to BIN_HI
-CHIRP_AMP      = 0.8                           # chirp amplitude
+CHIRP_AMP      = 1.0                           # chirp amplitude — raised for OGG Opus survival
 
 # Normalised cross-correlation threshold for sync detection.
 # 0.25 survived AAC 128k in bench testing; 0.15 is the hard floor.
-SYNC_THRESHOLD = 0.25
+SYNC_THRESHOLD = 0.08   # lowered from 0.25 — calibrated for OGG Opus 32-64 kbps (Telegram voice)
 
 # ── Output audio ──────────────────────────────────────────────────────────────
 POST_ROLL_LEN   = int(SR * 0.25)   # 12 000 samples of trailing silence

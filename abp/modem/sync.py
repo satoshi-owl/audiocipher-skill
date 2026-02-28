@@ -69,7 +69,7 @@ def detect(
     Args:
         samples:   1-D float32 audio at SR Hz.
         threshold: Minimum normalised correlation to accept as a sync hit.
-                   SYNC_THRESHOLD (0.25) works reliably after AAC 128 k.
+                   SYNC_THRESHOLD (0.08) works reliably after AAC 128 k and OGG Opus 32-64 kbps.
 
     Returns:
         Sample index of the first sample of the chirp preamble, or None if
