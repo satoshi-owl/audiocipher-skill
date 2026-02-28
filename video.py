@@ -418,14 +418,7 @@ def generate_video(
         )
 
     # ── Audio codec + decodability notice ─────────────────────────────────────
-    if not twitter:
-        print(
-            '→ Audio: ALAC lossless — decode this MP4 directly with:\n'
-            '     python3 audiocipher.py decode ' + os.path.basename(output_path),
-            file=sys.stderr,
-        )
-    else:
-        if _unsafe_mode:
+    if _unsafe_mode and not twitter:
             print(
                 '⚠  --twitter: AAC will corrupt FSK/Morse frequencies.\n'
                 '   Cipher CANNOT be decoded from this MP4.\n'
@@ -457,11 +450,11 @@ def generate_video(
     upcoming_col      = ~played_col
 
     # ── Open ffmpeg process (stdin = raw RGB24) ────────────────────────────────
-    audio_args = (
-        ['-c:a', 'aac', '-b:a', audio_bitrate]
-        if twitter else
-        ['-c:a', 'alac']
-    )
+    # AAC 320k by default — ABP survives it and browsers can decode AAC-MP4
+    # natively (Chrome cannot decode ALAC via Web Audio API).
+    # ALAC is only used when explicitly requested via twitter=False AND a
+    # non-ABP cipher mode that requires lossless preservation.
+    audio_args = ['-c:a', 'aac', '-b:a', audio_bitrate]
 
     # Embed cipher metadata as an MP4 comment tag so `audiocipher decode` can
     # auto-detect mode even after AAC re-encoding strips the WAV RIFF metadata.
