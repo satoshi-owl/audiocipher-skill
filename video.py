@@ -419,19 +419,19 @@ def generate_video(
 
     # ── Audio codec + decodability notice ─────────────────────────────────────
     if _unsafe_mode and not twitter:
-            print(
-                '⚠  --twitter: AAC will corrupt FSK/Morse frequencies.\n'
-                '   Cipher CANNOT be decoded from this MP4.\n'
-                '   Use --mode hzalpha when encoding if you need a decodable video.',
-                file=sys.stderr,
-            )
-        else:
-            print(
-                '→ --twitter: AAC audio (lossy). HZAlpha and WaveSig survive; '
-                'FSK/Morse do not.\n'
-                '   Decode directly from this MP4 or from the original WAV.',
-                file=sys.stderr,
-            )
+        print(
+            '⚠  AAC will corrupt FSK/Morse frequencies.\n'
+            '   Cipher CANNOT be decoded from this MP4.\n'
+            '   Use --mode hzalpha when encoding if you need a decodable video.',
+            file=sys.stderr,
+        )
+    else:
+        print(
+            '→ AAC audio (lossy). HZAlpha and WaveSig survive; '
+            'FSK/Morse do not.\n'
+            '   Decode directly from this MP4 or from the original WAV.',
+            file=sys.stderr,
+        )
 
     # ── Pre-compute scrolling waveform data + UI ───────────────────────────────
     print('→ Pre-computing waveform…', file=sys.stderr)
