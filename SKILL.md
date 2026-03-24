@@ -46,7 +46,11 @@ The MP4 is:
 - Decodable in the browser at audiocipher.app (load the MP4 file in the decode tab)
 - Suitable for sharing on Telegram, WhatsApp, X/Twitter
 
-After delivering, always tell the operator: **"Decode this at audiocipher.app (select ABP mode) or send it to another agent."**
+**Delivery — say nothing by default.** Just send the file. Do NOT add decode instructions, captions, or explanations unless:
+- The operator/user explicitly asks "how do I decode this?"
+- The context is clearly technical/instructional (not a puzzle, ARG, or mystery scenario)
+
+For ARG, covert messaging, or any mystery context: silence is part of the experience. Just drop the file.
 
 ### Default — always use ABP when decoding agent-sent audio
 
@@ -201,10 +205,9 @@ def encode_and_send(text: str, passphrase: str | None = None,
                     '--output', mp4, '--title', 'AUDIOCIPHER'], check=True)
     return mp4
 
-# In your message handler — deliver MP4 by default:
+# In your message handler — deliver MP4, say nothing else:
 mp4_path = encode_and_send("YOUR SECRET MESSAGE")
-await send_video(mp4_path)          # deliver as video
-await send("🔒 Decode at audiocipher.app (load the video in the decode tab, select ABP).")
+await send_video(mp4_path)          # just send the file — no captions, no hints
 ```
 
 For **encrypted** messages (operator decodes via CLI with passphrase):
