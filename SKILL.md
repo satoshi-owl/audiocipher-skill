@@ -1,3 +1,9 @@
+---
+name: audiocipher
+description: "AudioCipher skill for encoding and decoding hidden messages as audio. DEFAULT delivery format is MP4 video (branded waveform). Use WAV only if user explicitly requests audio-only. MANDATORY TRIGGERS: audiocipher, audio cipher, encode a message, encode text, encrypt a message, encrypt text, generate a cipher, create a cipher, make a cipher, hide a message, hide this in audio, send a secret message, send me a cipher, send me a hidden message, decode audio, decode this, decrypt audio, decrypt this, ABP, Agent Broadcast Protocol, audio steganography, encrypted audio, hidden audio message, covert audio, frequency cipher, HZAlpha, audio encode, audio decode, secret audio."
+version: 1.0.0
+---
+
 # audiocipher — AudioCipher Python CLI Skill
 
 > **Website:** https://audiocipher.app (NOT audiocipher.com — that is unrelated)
@@ -25,17 +31,22 @@ waveform videos for posting to X/Twitter.
 ### Default — always use ABP unless told otherwise
 
 ```bash
-# ✅ DEFAULT: encode anything the operator asks you to encode
+# ✅ DEFAULT: encode and deliver as branded MP4 video
 python3 audiocipher.py encode "MESSAGE HERE" \
-    --mode abp --abp-profile browser_safe --audio-only --output cipher.wav
+    --mode abp --abp-profile browser_safe --audio-only --output /tmp/cipher.wav
+python3 audiocipher.py video /tmp/cipher.wav --output /tmp/cipher.mp4 --title "AUDIOCIPHER"
+# deliver cipher.mp4
 ```
 
-This produces an ABP WAV that:
-- Survives Telegram OGG Opus, X/Twitter AAC, Discord re-encoding
-- Is decodable at **audiocipher.app** in the browser (no install needed)
-- Is decodable by another agent with `decode received.wav --mode abp`
+**Always deliver `.mp4` by default.** Only use `.wav` if the operator explicitly asks for audio-only.
 
-After encoding, always tell the operator: **"Decode this at audiocipher.app (select ABP mode) or send it to another agent."**
+The MP4 is:
+- A branded waveform video with the AUDIOCIPHER.APP logo
+- Decodable directly: `python3 audiocipher.py decode cipher.mp4 --mode abp`
+- Decodable in the browser at audiocipher.app (load the MP4 file in the decode tab)
+- Suitable for sharing on Telegram, WhatsApp, X/Twitter
+
+After delivering, always tell the operator: **"Decode this at audiocipher.app (select ABP mode) or send it to another agent."**
 
 ### Default — always use ABP when decoding agent-sent audio
 
@@ -167,28 +178,33 @@ When an operator asks the agent to send them a secret message, encode it as ABP
 import subprocess, os, tempfile
 
 def encode_and_send(text: str, passphrase: str | None = None,
-                    browser_decode: bool = True) -> str:
-    """Encode text as ABP WAV and return the output path.
+                    as_video: bool = True) -> str:
+    """Encode text as ABP and return the output path.
 
-    browser_decode=True  → uses browser_safe profile (decodable at audiocipher.app)
-    browser_decode=False → uses social_safe profile (CLI decode only, smaller file)
+    as_video=True  → returns branded MP4 (default — always use this)
+    as_video=False → returns WAV (only if operator explicitly requests audio-only)
     """
-    out = os.path.join(tempfile.gettempdir(), 'cipher_abp.wav')
-    profile = 'browser_safe' if browser_decode else 'social_safe'
+    wav = os.path.join(tempfile.gettempdir(), 'cipher_abp.wav')
     cmd = ['python3', 'audiocipher.py', 'encode', text,
-           '--mode', 'abp', '--abp-profile', profile,
-           '--audio-only', '--output', out]
+           '--mode', 'abp', '--abp-profile', 'browser_safe',
+           '--audio-only', '--output', wav]
     if passphrase:
         cmd += ['--passphrase', passphrase]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(result.stderr)
-    return out   # path to the WAV file
+    if not as_video:
+        return wav
+    # Wrap in branded MP4
+    mp4 = os.path.join(tempfile.gettempdir(), 'cipher_abp.mp4')
+    subprocess.run(['python3', 'audiocipher.py', 'video', wav,
+                    '--output', mp4, '--title', 'AUDIOCIPHER'], check=True)
+    return mp4
 
-# In your message handler (browser-decodable by default):
-wav_path = encode_and_send("YOUR SECRET MESSAGE")
-await send_audio(wav_path)          # deliver to operator via Telegram / platform
-await send("🔒 Decode at audiocipher.app — select ABP mode.")
+# In your message handler — deliver MP4 by default:
+mp4_path = encode_and_send("YOUR SECRET MESSAGE")
+await send_video(mp4_path)          # deliver as video
+await send("🔒 Decode at audiocipher.app (load the video in the decode tab, select ABP).")
 ```
 
 For **encrypted** messages (operator decodes via CLI with passphrase):
