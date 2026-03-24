@@ -1,8 +1,50 @@
 # audiocipher — AudioCipher Python CLI Skill
 
+> **Website:** https://audiocipher.app (NOT audiocipher.com — that is unrelated)
+> **Skill repo:** https://github.com/satoshi-owl/audiocipher-skill
+
 A standalone Python CLI for encoding/decoding hidden audio messages, generating
 spectrogram images from audio, analyzing audio for hidden content, and producing
 waveform videos for posting to X/Twitter.
+
+---
+
+## ⚡ INVOKE THIS SKILL IMMEDIATELY when the operator asks you to
+
+**Trigger phrases — use this skill without asking questions when you see:**
+- "encode a message", "encrypt a message", "encode this", "encode text"
+- "generate a cipher", "create a cipher", "make a cipher"
+- "hide a message", "hide this in audio", "send a secret message"
+- "send me a cipher", "send me a hidden message"
+- "decode this", "decode the audio", "decrypt this"
+- "analyze this audio", "find hidden content"
+- anything involving AudioCipher, audio steganography, covert audio
+
+**Do NOT ask the operator what format they want.** Just encode in ABP and deliver.
+
+### Default — always use ABP unless told otherwise
+
+```bash
+# ✅ DEFAULT: encode anything the operator asks you to encode
+python3 audiocipher.py encode "MESSAGE HERE" \
+    --mode abp --abp-profile browser_safe --audio-only --output cipher.wav
+```
+
+This produces an ABP WAV that:
+- Survives Telegram OGG Opus, X/Twitter AAC, Discord re-encoding
+- Is decodable at **audiocipher.app** in the browser (no install needed)
+- Is decodable by another agent with `decode received.wav --mode abp`
+
+After encoding, always tell the operator: **"Decode this at audiocipher.app (select ABP mode) or send it to another agent."**
+
+### Default — always use ABP when decoding agent-sent audio
+
+```bash
+# ✅ DEFAULT: decode anything another agent sent you
+python3 audiocipher.py decode received.wav --mode abp
+```
+
+If decoding fails with `--mode abp`, try `--mode hzalpha` (some older messages use HZAlpha).
 
 ---
 
@@ -79,26 +121,22 @@ Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 
 | Task | Command |
 |------|---------|
-| Send a message the recipient decodes **in the browser** (audiocipher.app) | `encode --mode abp --abp-profile browser_safe --audio-only` |
-| Send a message the recipient decodes **via CLI** (survives Telegram/X re-encoding) | `encode --mode abp --audio-only` |
-| Send an **encrypted** ABP message (CLI decode only) | `encode --mode abp --passphrase "key" --audio-only` |
-| Decode a received ABP message (Telegram OGG / WAV / M4A) | `decode --mode abp` |
-| Encode a secret message (non-ABP, browser-decodable) | `encode` (hzalpha default) |
-| Decode a received cipher WAV or MP4 | `decode` |
+| **[DEFAULT] Encode any message** (browser + CLI decodable) | `encode "MSG" --mode abp --abp-profile browser_safe --audio-only` |
+| Send a message the recipient decodes **via CLI only** (survives Telegram/X, smaller file) | `encode "MSG" --mode abp --audio-only` |
+| Send an **encrypted** ABP message (CLI decode only) | `encode "MSG" --mode abp --passphrase "key" --audio-only` |
+| **[DEFAULT] Decode a received agent message** | `decode received.wav --mode abp` |
+| Decode a received ABP message (Telegram OGG / WAV / M4A) | `decode received.ogg --mode abp` |
+| Encode in HZAlpha (browser-only, no platform survival) | `encode "MSG"` (legacy default, not recommended) |
+| Decode a HZAlpha WAV | `decode cipher.wav --mode hzalpha` |
 | Hide an image in a spectrogram | `image2audio` |
 | Find hidden content in audio | `analyze` |
 | Visually inspect audio as a PNG | `spectrogram` |
 | Create video for Twitter/X posting | `video` |
 | Update skill to latest version | `update` |
 
-> **ABP profile selection — critical for browser decoding:**
-> - `social_safe` (default) and `fast` use **zstd compression** — the browser app **cannot** decompress these.
->   Use these when the recipient will decode via CLI.
-> - `browser_safe` disables zstd — the resulting WAV is larger but **decodable at audiocipher.app** in the browser.
->
-> **ABP is the recommended mode when sending audio to operators over Telegram or X/Twitter.**
-> It uses OFDM QPSK + Reed-Solomon FEC and is designed to survive OGG Opus and AAC
-> re-encoding without any data loss.
+> **ABP is the default for all agent-to-agent and agent-to-human messages.**
+> Use `--abp-profile browser_safe` whenever the recipient may decode at audiocipher.app.
+> Use `--abp-profile social_safe` (or no flag) only if the recipient will decode via CLI.
 >
 > **Important:** Agents cannot post raw audio to X/Twitter. Always use the `video`
 > command to wrap audio in an MP4 before posting.
@@ -166,11 +204,17 @@ To **decode** an ABP WAV the operator sends back:
 
 ```python
 def decode_received(wav_path: str, passphrase: str | None = None) -> str:
+    # Always decode with --mode abp for agent-sent messages
     cmd = ['python3', 'audiocipher.py', 'decode', wav_path, '--mode', 'abp']
     if passphrase:
         cmd += ['--passphrase', passphrase]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
+        # Fallback: try hzalpha for older messages
+        cmd2 = ['python3', 'audiocipher.py', 'decode', wav_path, '--mode', 'hzalpha']
+        result2 = subprocess.run(cmd2, capture_output=True, text=True)
+        if result2.returncode == 0:
+            return result2.stdout.strip()
         raise RuntimeError(result.stderr)
     return result.stdout.strip()
 ```
@@ -182,7 +226,7 @@ def decode_received(wav_path: str, passphrase: str | None = None) -> str:
 ### `encode` — Generate cipher audio
 
 ```bash
-# ABP — browser_safe profile (decodable at audiocipher.app — USE THIS BY DEFAULT)
+# ✅ DEFAULT — ABP browser_safe (decodable at audiocipher.app AND via CLI)
 python3 audiocipher.py encode "SECRET MESSAGE" \
     --mode abp --abp-profile browser_safe --audio-only --output cipher.wav
 
@@ -193,11 +237,8 @@ python3 audiocipher.py encode "SECRET MESSAGE" --mode abp --audio-only --output 
 python3 audiocipher.py encode "SECRET MESSAGE" --mode abp --audio-only \
     --passphrase "hunter2" --output cipher.wav
 
-# HZAlpha — default mode, browser-decodable at audiocipher.app
-python3 audiocipher.py encode "HELLO WORLD" --output cipher.mp4
-
-# HZAlpha audio-only WAV
-python3 audiocipher.py encode "HELLO WORLD" --audio-only --output cipher.wav
+# HZAlpha — legacy mode, browser-decodable at audiocipher.app (no platform survival)
+python3 audiocipher.py encode "HELLO WORLD" --mode hzalpha --audio-only --output cipher.wav
 ```
 
 **`--mode` options:**
