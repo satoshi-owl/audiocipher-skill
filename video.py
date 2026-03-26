@@ -2,18 +2,20 @@
 video.py — AudioCipher-branded scrolling waveform video generation.
 
 Generates a 1280×720 (or custom) MP4 with:
-  - AudioCipher dark brand theme (#0A0A0F bg, #00FF88 waveform)
+  - Signal Mode brand theme (#0A0A0F dark bg, #00FF88 green waveform)
+    Matches the AudioCipher website Signal Mode aesthetic exactly.
   - SCROLLING waveform: the audio flows left past a fixed centre playhead
-    · Left half  (played)    — bright green with three-layer glow, tapers toward left edge
-    · Right half (upcoming)  — dim green, tapers toward right edge
-    · Fixed centre playhead  — bright vertical line
+    · Left half  (played)    — #00FF88 bright green with three-layer glow, edge-tapered
+    · Right half (upcoming)  — ghost/barely-visible dim green
+    · Fixed centre playhead  — #00FF88 accent green with glow
     · Visible window ≈ 4 s of audio (zoom-in with --window-seconds)
-  - Subtle amplitude grid (±25 / ±50 / ±75 % reference lines)
-  - CRT scanline overlay (every 3rd row dimmed 18 %)
-  - Optional title text (top-left, off-white, large monospace)
-  - AUDIOCIPHER logo badge (top-right, green pill)
-  - audiocipher.app watermark (bottom-right, dim green)
-  - H.264 video + ALAC lossless audio by default (MP4 is fully decodable);
+  - Subtle amplitude grid (±25 / ±50 / ±75 % near-invisible green tint)
+  - CRT scanline overlay (every 3rd row dimmed 8 % — subtle)
+  - Accent green progress bar (3 px, very bottom of frame)
+  - Optional title text (top-left, white, large monospace)
+  - AUDIOCIPHER outlined pill badge (top-right, white text + green dot)
+  - audiocipher.app watermark (bottom-right, dim green 18% opacity)
+  - H.264 video + AAC audio (MP4 is fully decodable);
     add --twitter for AAC 320k social posting.
 
 Rendering: frames piped to ffmpeg via stdin (rawvideo RGB24).
@@ -36,17 +38,18 @@ import numpy as np
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Brand palette
+# Brand palette — Signal Mode (matches audiocipher.app website exactly)
 # ─────────────────────────────────────────────────────────────────────────────
-_BG          = (10,  10,  15)   # #0A0A0F
-_GREEN_CORE  = (0,  255, 136)   # #00FF88 — waveform core / playhead
-_GREEN_INNER = (0,  150,  75)
-_GREEN_OUTER = (0,   40,  20)
-_GREEN_DIM   = (0,   55,  28)   # upcoming bars (pre-play)
-_GRID_LINE   = (0,   22,  11)
-_WHITE       = (218, 218, 228)
-_BADGE_BG    = (14,  30,  21)
-_PLAYHEAD    = (180, 255, 210)  # slightly cooler white-green for scan line
+_BG          = (10,  10,  15)   # #0A0A0F — Signal Mode dark background
+_WAVE_CORE   = (0,  255, 136)   # #00FF88 — Signal Mode accent green
+_WAVE_INNER  = (0,  178,  95)   # mid green — inner glow layer
+_WAVE_OUTER  = (0,   80,  43)   # dark green — outer diffuse glow
+_WAVE_DIM    = (0,   38,  21)   # barely-visible upcoming green
+_GRID_LINE   = (0,   25,  14)   # amplitude grid — near-invisible green tint
+_WHITE       = (200, 200, 220)  # slightly blue-white — text / badge label
+_BADGE_BG    = (17,  17,  24)   # #111118 — badge background (card bg)
+_PLAYHEAD    = (0,  255, 136)   # #00FF88 — playhead matches accent green
+_GREEN_DIM   = (0,  100,  54)   # dim green — watermark / subtle UI elements
 
 FPS            = 30     # output frame rate
 WINDOW_SECONDS = 4.0    # seconds of audio visible in the scrolling window
@@ -107,9 +110,11 @@ def _load_font(size: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _draw_logo_badge(draw, right_x: int, top_y: int, font_sm) -> None:
-    BADGE_W, BADGE_H, RADIUS = 230, 30, 6
+    """Outlined pill badge — 'AUDIOCIPHER' with accent green status dot."""
+    BADGE_W, BADGE_H, RADIUS = 210, 28, 6
     bx = right_x - BADGE_W
     by = top_y
+    # Filled background (very close to page bg — creates the "inset" look)
     try:
         draw.rounded_rectangle([(bx, by), (bx + BADGE_W, by + BADGE_H)],
                                radius=RADIUS, fill=_BADGE_BG)
@@ -120,16 +125,22 @@ def _draw_logo_badge(draw, right_x: int, top_y: int, font_sm) -> None:
         for cx, cy in [(bx, by), (bx + BADGE_W - r2, by),
                        (bx, by + BADGE_H - r2), (bx + BADGE_W - r2, by + BADGE_H - r2)]:
             draw.ellipse([(cx, cy), (cx + r2, cy + r2)], fill=_BADGE_BG)
+    # Outline — warm neutral, 18% opacity (simulated: blend toward bg)
+    _BORDER = tuple(int(_BG[c] * 0.72 + _WHITE[c] * 0.28) for c in range(3))
     try:
         draw.rounded_rectangle([(bx, by), (bx + BADGE_W, by + BADGE_H)],
-                               radius=RADIUS, outline=_GREEN_DIM, width=1)
+                               radius=RADIUS, outline=_BORDER, width=1)
     except TypeError:
         pass
-    DOT_R = 4
-    dot_cx, dot_cy = bx + 16, by + BADGE_H // 2
+    # Green status dot
+    DOT_R  = 3
+    dot_cx = bx + 16
+    dot_cy = by + BADGE_H // 2
     draw.ellipse([(dot_cx - DOT_R, dot_cy - DOT_R), (dot_cx + DOT_R, dot_cy + DOT_R)],
-                 fill=_GREEN_CORE)
-    draw.text((bx + 28, by + BADGE_H // 2 - 7), 'AUDIOCIPHER.APP', fill=_GREEN_CORE, font=font_sm)
+                 fill=_WAVE_CORE)
+    # Label — parchment text, 75% opacity (simulated)
+    _LABEL = tuple(int(_BG[c] * 0.25 + _WHITE[c] * 0.75) for c in range(3))
+    draw.text((bx + 26, by + BADGE_H // 2 - 7), 'AUDIOCIPHER.APP', fill=_LABEL, font=font_sm)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -137,9 +148,9 @@ def _draw_logo_badge(draw, right_x: int, top_y: int, font_sm) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_scanline_mult(H: int) -> np.ndarray:
-    """Float32 (H, 1, 1) multiplier: 0.82 every 3rd row, else 1.0."""
+    """Float32 (H, 1, 1) multiplier: 0.92 every 3rd row (subtle), else 1.0."""
     m = np.ones((H, 1, 1), dtype=np.float32)
-    m[::3] = 0.82
+    m[::3] = 0.92
     return m
 
 
@@ -216,13 +227,26 @@ def _precompute_ui(
 
 def _make_fade_curve(WAVE_W: int) -> np.ndarray:
     """
-    1-D float32 (WAVE_W,): multiplied into bar heights so bars at the
-    edges of the scrolling window taper gracefully (0.35 → 1.0 → 0.35).
+    Raised-cosine taper (WAVE_W,) — matches JS pow(t, 0.65) cosine envelope.
+    Fades amplitude smoothly to ~0 at both edges, full strength in the centre.
     """
-    half  = WAVE_W // 2
-    left  = np.linspace(0.35, 1.0, half,           dtype=np.float32)
-    right = np.linspace(1.0, 0.35, WAVE_W - half,  dtype=np.float32)
-    return np.concatenate([left, right])
+    xs    = np.linspace(-1.0, 1.0, WAVE_W, dtype=np.float32)
+    t     = np.abs(xs) ** 0.65
+    return (0.5 * (1.0 + np.cos(np.pi * t))).astype(np.float32)
+
+
+def _smooth_amps(amps: np.ndarray, sigma: int = 4) -> np.ndarray:
+    """
+    Pure-numpy gaussian smoothing — no scipy dependency.
+    Converts blocky per-pixel steps into a smooth continuous curve.
+    """
+    ks     = sigma * 6 + 1                                 # kernel size (odd)
+    xs     = np.arange(ks, dtype=np.float32) - ks // 2
+    kernel = np.exp(-0.5 * (xs / sigma) ** 2)
+    kernel /= kernel.sum()
+    pad    = ks // 2
+    padded = np.pad(amps, pad, mode='reflect')
+    return np.convolve(padded, kernel, mode='valid')[:len(amps)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,65 +254,153 @@ def _make_fade_curve(WAVE_W: int) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_frame_scrolling(
-    bar_amps_padded:  np.ndarray,   # pre-computed amp array (padded)
-    amp_offset:       int,          # slice start in bar_amps_padded
-    fade_curve:       np.ndarray,   # (WAVE_W,) height taper
-    ui_arr:           np.ndarray,   # (H, W, 3) UI chrome
-    ui_mask:          np.ndarray,   # (H, W) bool
-    scanline_mult:    np.ndarray,   # (H, 1, 1) CRT dimming
-    dist_from_center: np.ndarray,   # (H, 1) precomputed |y - WAVE_CENTER|
-    played_col:       np.ndarray,   # (WAVE_W,) bool — True for left half
-    upcoming_col:     np.ndarray,   # (WAVE_W,) bool — True for right half
+    bar_amps_padded:  np.ndarray,
+    amp_offset:       int,
+    fade_curve:       np.ndarray,
+    ui_arr:           np.ndarray,
+    ui_mask:          np.ndarray,
+    scanline_mult:    np.ndarray,
+    dist_from_center: np.ndarray,
+    played_col:       np.ndarray,   # kept for signature compat (unused — gradient replaces it)
+    upcoming_col:     np.ndarray,   # kept for signature compat
     MARGIN_X:         int,
     WAVE_W:           int,
     WAVE_CENTER:      int,
     WAVE_MAX_H:       int,
     H:                int,
     W:                int,
+    progress:         float = 0.0,
 ) -> np.ndarray:
-    """Render one scrolling-waveform video frame as a (H, W, 3) uint8 array."""
+    """
+    Render one smooth scrolling-waveform frame.
 
-    # ── Background + amplitude grid ───────────────────────────────────────────
+    Visual layers:
+      1. BG fill
+      2. Smooth gaussian-blurred waveform polygon (cream top/ghost upcoming)
+      3. Vertical gradient overlay (dense at peak → transparent at centre)
+      4. Playhead (green, 5-px glow)
+      5. Progress bar
+      6. CRT scanlines
+      7. UI chrome (badge / title / watermark)
+    """
+    from PIL import Image, ImageDraw
+
+    # ── 1. Background ──────────────────────────────────────────────────────────
     arr = np.full((H, W, 3), _BG, dtype=np.uint8)
-    for pct in (0.25, 0.50, 0.75):
-        for sign in (1, -1):
-            gy = WAVE_CENTER + int(sign * pct * WAVE_MAX_H)
-            if 0 <= gy < H:
-                arr[gy, MARGIN_X:MARGIN_X + WAVE_W] = _GRID_LINE
-    arr[WAVE_CENTER, MARGIN_X:MARGIN_X + WAVE_W] = _GREEN_INNER
 
-    # ── Amplitude window + fade-tapered bar heights ───────────────────────────
-    window_amps = bar_amps_padded[amp_offset: amp_offset + WAVE_W]   # (WAVE_W,)
-    bh = np.maximum(1, (window_amps * fade_curve * WAVE_MAX_H).astype(int))  # (WAVE_W,)
+    # ── 2. Smooth amplitude window ─────────────────────────────────────────────
+    raw_amps  = bar_amps_padded[amp_offset: amp_offset + WAVE_W].copy()
+    tapered   = raw_amps * fade_curve                            # cosine-tapered
+    smoothed  = _smooth_amps(tapered, sigma=5)                   # gaussian smooth
+    smoothed  = np.clip(smoothed, 0.0, 1.0)
+    heights   = (smoothed * WAVE_MAX_H).astype(int)              # (WAVE_W,)
 
-    # ── Vectorised glow masks (H × WAVE_W) ────────────────────────────────────
-    # dist_from_center is (H, 1); bh is (WAVE_W,) → both broadcast to (H, WAVE_W)
-    outer_mask = dist_from_center <= bh[np.newaxis, :] + 4   # (H, WAVE_W)
-    inner_mask = dist_from_center <= bh[np.newaxis, :] + 1
-    core_mask  = dist_from_center <= bh[np.newaxis, :]
+    # ── 3. Build waveform polygon and paint it via PIL ─────────────────────────
+    img  = Image.fromarray(arr, 'RGB')
+    draw = ImageDraw.Draw(img)
 
-    # wv is a (H, WAVE_W, 3) view into arr — writes go directly into arr
-    wv = arr[:, MARGIN_X:MARGIN_X + WAVE_W]
+    # Centre baseline (barely visible)
+    draw.line([(MARGIN_X, WAVE_CENTER), (MARGIN_X + WAVE_W, WAVE_CENTER)],
+              fill=_WAVE_OUTER, width=1)
 
-    # Upcoming bars — dim, no glow
-    wv[core_mask  & upcoming_col] = _GREEN_DIM
+    # Build polygon (top edge left→right, bottom edge right→left)
+    xs        = list(range(MARGIN_X, MARGIN_X + WAVE_W))
+    top_pts   = [(x, WAVE_CENTER - h) for x, h in zip(xs, heights)]
+    bot_pts   = [(x, WAVE_CENTER + h) for x, h in zip(xs, heights)]
+    polygon   = top_pts + list(reversed(bot_pts))
 
-    # Played bars — three-layer glow (outer painted first, core last)
-    wv[outer_mask & played_col]   = _GREEN_OUTER
-    wv[inner_mask & played_col]   = _GREEN_INNER
-    wv[core_mask  & played_col]   = _GREEN_CORE
+    if len(polygon) >= 3:
+        # Glow pass — slightly expanded polygon, dim colour
+        glow_poly = [(x, WAVE_CENTER - max(0, h - 1) - 4)
+                     for x, h in zip(xs, heights)] + \
+                    list(reversed([(x, WAVE_CENTER + max(0, h - 1) + 4)
+                                   for x, h in zip(xs, heights)]))
+        draw.polygon(glow_poly, fill=tuple(
+            int(_BG[c] * 0.35 + _WAVE_OUTER[c] * 0.65) for c in range(3)))
+        # Main polygon
+        draw.polygon(polygon, fill=_WAVE_CORE)
 
-    # ── Centre playhead (fixed vertical line) ─────────────────────────────────
-    ctr = MARGIN_X + WAVE_W // 2
-    for dx, col in ((0, _PLAYHEAD), (-1, _GREEN_INNER), (1, _GREEN_INNER)):
+    arr = np.array(img)
+
+    # ── 4. Horizontal played/upcoming gradient overlay ─────────────────────────
+    # Left of playhead → full brightness; right → ghost
+    # Build a 1-D alpha curve (WAVE_W,): 1.0 played, 0.0 upcoming
+    play_px     = int(progress * WAVE_W)          # playhead column within wave area
+    alpha_h     = np.zeros(WAVE_W, dtype=np.float32)
+    if play_px > 0:
+        alpha_h[:play_px] = 1.0
+    # Soften the transition ±4 px
+    blend_w = max(1, min(8, WAVE_W // 10))
+    for k in range(blend_w):
+        col_idx = play_px - blend_w + k
+        if 0 <= col_idx < WAVE_W:
+            alpha_h[col_idx] = k / blend_w
+
+    # For each column apply: played → keep WAVE_CORE; upcoming → blend toward WAVE_DIM
+    # wv view: (H, WAVE_W, 3)
+    wv   = arr[:, MARGIN_X:MARGIN_X + WAVE_W].astype(np.float32)
+    # alpha_h: (1, WAVE_W, 1) broadcast
+    a    = alpha_h[np.newaxis, :, np.newaxis]
+    dim  = np.array(_WAVE_DIM, dtype=np.float32)
+    # Blend: result = a * played_pixel + (1-a) * dim_pixel
+    # Only apply where pixel is not background
+    bg_f = np.array(_BG, dtype=np.float32)
+    is_wave = np.any(wv != bg_f, axis=2)            # (H, WAVE_W)
+    played_wv = wv * a + np.full_like(wv, dim) * (1 - a)
+    arr[:, MARGIN_X:MARGIN_X + WAVE_W] = np.where(
+        is_wave[:, :, np.newaxis], played_wv.clip(0, 255).astype(np.uint8), arr[:, MARGIN_X:MARGIN_X + WAVE_W]
+    )
+
+    # ── 5. Vertical fade — dense at peak, wispy near the centre line ───────────
+    # t[row]: 0 at WAVE_CENTER, 1 at WAVE_CENTER ± WAVE_MAX_H
+    ys     = np.arange(H, dtype=np.float32)
+    t_vert = np.clip(np.abs(ys - WAVE_CENTER) / max(1, WAVE_MAX_H * 0.85), 0, 1)
+    # Where t_vert is low (near centre): blend toward BG
+    # effect: opacity_multiplier(row) = t_vert.  Apply to wave pixels only
+    t_col   = t_vert[:, np.newaxis, np.newaxis]           # (H, 1, 1)
+    wave_px = arr[:, MARGIN_X:MARGIN_X + WAVE_W].astype(np.float32)
+    bg_col  = np.array(_BG, dtype=np.float32)
+    faded   = (wave_px * t_col + bg_col * (1 - t_col)).clip(0, 255).astype(np.uint8)
+    # Apply only to non-background pixels
+    is_w2   = np.any(wave_px.astype(np.uint8) != np.array(_BG, dtype=np.uint8), axis=2)
+    arr[:, MARGIN_X:MARGIN_X + WAVE_W] = np.where(
+        is_w2[:, :, np.newaxis], faded, arr[:, MARGIN_X:MARGIN_X + WAVE_W]
+    )
+
+    # ── 6. Playhead — accent green, 5-px glow envelope ────────────────────────
+    ctr        = MARGIN_X + WAVE_W // 2
+    row_start  = int(H * 0.05)
+    row_end    = int(H * 0.95)
+    glow_steps = [(-3, 0.10), (-2, 0.25), (-1, 0.50), (0, 1.0), (1, 0.50), (2, 0.25), (3, 0.10)]
+    for dx, alpha in glow_steps:
         gx = ctr + dx
-        if MARGIN_X <= gx < MARGIN_X + WAVE_W:
-            arr[:, gx] = col
+        if 0 <= gx < W:
+            col = tuple(int(_BG[c] * (1 - alpha) + _PLAYHEAD[c] * alpha) for c in range(3))
+            arr[row_start:row_end, gx] = col
 
-    # ── CRT scanlines ─────────────────────────────────────────────────────────
+    # Diamond marker at waveform centre
+    d_size = 9
+    for dy in range(-d_size, d_size + 1):
+        dx_max = d_size - abs(dy)
+        for dx in range(-dx_max, dx_max + 1):
+            r, c2 = WAVE_CENTER + dy, ctr + dx
+            if 0 <= r < H and 0 <= c2 < W:
+                # blend toward white at centre of diamond
+                t_d = 1.0 - (abs(dx) + abs(dy)) / (d_size + 1)
+                arr[r, c2] = tuple(
+                    int(_BG[c] * (1 - t_d) + _PLAYHEAD[c] * t_d) for c in range(3))
+
+    # ── 7. Progress bar — 4 px at very bottom ─────────────────────────────────
+    track_col = tuple(int(_BG[c] * 0.7 + _WAVE_CORE[c] * 0.06) for c in range(3))
+    arr[H - 4:H, :]            = track_col
+    fill_w = max(0, min(W, int(W * progress)))
+    if fill_w > 0:
+        arr[H - 4:H, :fill_w]  = _PLAYHEAD
+
+    # ── 8. CRT scanlines ──────────────────────────────────────────────────────
     arr = (arr.astype(np.float32) * scanline_mult).clip(0, 255).astype(np.uint8)
 
-    # ── UI chrome (no scanlines on badge / title / watermark) ─────────────────
+    # ── 9. UI chrome ──────────────────────────────────────────────────────────
     arr[ui_mask] = ui_arr[ui_mask]
 
     return arr
@@ -508,6 +620,7 @@ def generate_video(
                 ui_arr, ui_mask, scanline_mult,
                 dist_from_center, played_col, upcoming_col,
                 MARGIN_X, WAVE_W, WAVE_CENTER, WAVE_MAX_H, H, W,
+                progress=frac,
             )
             proc.stdin.write(frame.tobytes())
 
