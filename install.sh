@@ -5,9 +5,18 @@ set -e
 
 echo "── AudioCipher Skill Installer ──────────────────────────────"
 
+# ── Bootstrap pip if missing ──────────────────────────────────────────────────
+if ! command -v pip3 &>/dev/null && ! command -v pip &>/dev/null; then
+    echo "→ pip not found — bootstrapping..."
+    curl -sSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+    python3 /tmp/get-pip.py --user
+    rm /tmp/get-pip.py
+fi
+_PIP=$(command -v pip3 2>/dev/null || command -v pip)
+
 # ── Python packages ───────────────────────────────────────────────────────────
 echo "→ Installing Python dependencies..."
-pip3 install -r requirements.txt
+$_PIP install -r requirements.txt
 echo "  Python packages OK"
 
 # ── ffmpeg ────────────────────────────────────────────────────────────────────
