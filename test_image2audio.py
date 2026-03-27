@@ -74,9 +74,38 @@ def test_image_to_audio_smart_optimize():
         os.unlink(img_path)
 
 
+def test_image_to_audio_with_preview():
+    from spectrogram import image_to_audio_with_preview
+    print('image_to_audio_with_preview()')
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create 200×100 test image
+        img_path = os.path.join(tmpdir, 'test.png')
+        Image.new('RGB', (200, 100), color=(128, 64, 32)).save(img_path)
+
+        wav_path = os.path.join(tmpdir, 'out.wav')
+        result_wav, result_png = image_to_audio_with_preview(img_path, wav_path)
+
+        check('returns wav path', result_wav == wav_path)
+        check('wav file exists', os.path.isfile(result_wav))
+        check('wav is non-empty', os.path.getsize(result_wav) > 1000)
+
+        expected_png = os.path.join(tmpdir, 'out_spectrogram.png')
+        check('returns png path = <wav_stem>_spectrogram.png', result_png == expected_png)
+        check('png file exists', os.path.isfile(result_png))
+        check('png is non-empty', os.path.getsize(result_png) > 1000)
+
+        # Verify PNG is a valid image with expected dimensions
+        png_img = Image.open(result_png)
+        check('png width = 1200', png_img.width == 1200)
+        check('png height = 600', png_img.height == 600)
+        check('png mode = RGB', png_img.mode == 'RGB')
+
+
 if __name__ == '__main__':
     test_smart_optimize_params()
     test_image_to_audio_smart_optimize()
+    test_image_to_audio_with_preview()
     if _failures:
         print(f'\n{len(_failures)} failure(s): {_failures}')
         sys.exit(1)

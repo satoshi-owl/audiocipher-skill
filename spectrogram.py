@@ -240,6 +240,77 @@ def write_image_audio(output_path: str, audio: np.ndarray, sr: int = 44100):
     write_wav(output_path, audio, sr=sr, mode=None)
 
 
+def image_to_audio_with_preview(
+    image_path:     str,
+    output_wav:     str   = 'hidden.wav',
+    colormap:       str   = 'green',
+    smart_optimize: bool  = True,
+    sr:             int   = 44100,
+    amplitude:      float = 0.8,
+    invert:         bool  = False,
+) -> tuple[str, str]:
+    """
+    Encode image as spectrogram audio AND render a branded preview PNG.
+
+    This is the default agent delivery path: image in → WAV + spectrogram PNG out.
+
+    Args:
+        image_path:     Input image (PNG / JPG / any Pillow format)
+        output_wav:     Output WAV path (default: hidden.wav)
+        colormap:       Spectrogram colormap (default: 'green' — brand palette)
+        smart_optimize: Use Smart Optimize to auto-derive params (default: True)
+        sr:             Sample rate (default: 44100)
+        amplitude:      Output amplitude 0–1 (default: 0.8)
+        invert:         Invert image brightness (default: False)
+
+    Returns:
+        (wav_path, png_path) — paths to both output files
+    """
+    # Derive fmin/fmax for PNG rendering (must match what audio generation uses)
+    if smart_optimize:
+        from PIL import Image as _PILImg
+        _w, _h = _PILImg.open(image_path).size
+        _p = smart_optimize_params(_w, _h)
+        fmin = _p['fmin']
+        fmax = _p['fmax']
+    else:
+        fmin = 200.0
+        fmax = 16000.0
+
+    # Generate and save audio
+    audio = image_to_audio(
+        image_path,
+        fmin=fmin,
+        fmax=fmax,
+        sr=sr,
+        amplitude=amplitude,
+        invert=invert,
+        smart_optimize=smart_optimize,
+    )
+    write_image_audio(output_wav, audio, sr=sr)
+
+    # Derive PNG path: out.wav → out_spectrogram.png  (same directory as WAV)
+    wav_stem = Path(output_wav).with_suffix('')
+    png_path = str(wav_stem) + '_spectrogram.png'
+
+    # Render branded spectrogram PNG.
+    # save_spectrogram with labeled=True adds a fixed border:
+    #   PAD_L=56, PAD_R=12 → +68 px wide; PAD_T=12, PAD_B=28 → +40 px tall.
+    # Pass reduced inner dimensions so the final canvas is exactly 1200×600.
+    save_spectrogram(
+        output_wav,
+        png_path,
+        fmin=fmin,
+        fmax=fmax,
+        colormap=colormap,
+        width=1132,
+        height=560,
+        labeled=True,
+    )
+
+    return output_wav, png_path
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # AUDIO → SPECTROGRAM IMAGE
 # ═══════════════════════════════════════════════════════════════════════════════
