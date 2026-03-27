@@ -47,8 +47,36 @@ def test_smart_optimize_params():
     check('duration always <= 30', p4['duration'] <= 30.0)
 
 
+def test_image_to_audio_smart_optimize():
+    from spectrogram import image_to_audio
+    print('image_to_audio(smart_optimize=True)')
+
+    # Create a small test image: 200×100 white square
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+        img_path = f.name
+    try:
+        img = Image.new('RGB', (200, 100), color=(255, 255, 255))
+        img.save(img_path)
+
+        # smart_optimize=True: duration should be 200*0.016=3.2, not default 6.0
+        audio = image_to_audio(img_path, smart_optimize=True)
+        expected_samples = int(3.2 * 44100)
+        # Allow ±1 sample tolerance
+        check('smart_optimize derives duration from image width',
+              abs(len(audio) - expected_samples) <= 1)
+
+        # smart_optimize=False: uses caller-supplied duration=6.0
+        audio_manual = image_to_audio(img_path, smart_optimize=False, duration=6.0)
+        expected_manual = int(6.0 * 44100)
+        check('smart_optimize=False uses supplied duration',
+              abs(len(audio_manual) - expected_manual) <= 1)
+    finally:
+        os.unlink(img_path)
+
+
 if __name__ == '__main__':
     test_smart_optimize_params()
+    test_image_to_audio_smart_optimize()
     if _failures:
         print(f'\n{len(_failures)} failure(s): {_failures}')
         sys.exit(1)

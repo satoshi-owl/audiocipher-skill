@@ -135,13 +135,14 @@ def smart_optimize_params(img_width: int, img_height: int) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def image_to_audio(
-    image_path: str,
-    fmin:      float = 200.0,
-    fmax:      float = 16000.0,
-    duration:  float = 6.0,
-    sr:        int   = 44100,
-    amplitude: float = 0.8,
-    invert:    bool  = False,
+    image_path:     str,
+    fmin:           float = 200.0,
+    fmax:           float = 16000.0,
+    duration:       float = 6.0,
+    sr:             int   = 44100,
+    amplitude:      float = 0.8,
+    invert:         bool  = False,
+    smart_optimize: bool  = True,
 ) -> np.ndarray:
     """
     Convert an image to audio so the image appears in the spectrogram.
@@ -164,6 +165,15 @@ def image_to_audio(
 
     Source: spectrogram.html i2aRender() lines 1194–1253
     """
+    # ── Smart Optimize — auto-derive params from image dimensions ──────────────
+    if smart_optimize:
+        from PIL import Image as _PILImg  # peek at size without full load
+        _w, _h = _PILImg.open(image_path).size
+        _p = smart_optimize_params(_w, _h)
+        fmin     = _p['fmin']
+        fmax     = _p['fmax']
+        duration = _p['duration']
+
     from PIL import Image  # type: ignore
 
     img    = Image.open(image_path).convert('RGB')
@@ -171,7 +181,7 @@ def image_to_audio(
 
     # Cap at 512 bins/cols for performance (matches JS: Math.min(..., 512))
     num_bins = min(img_h, 512)  # frequency axis
-    num_cols = min(img_w, 512)  # time axis
+    num_cols = min(img_w, 1024)  # time axis — raised to 1024 to match Smart Optimize
 
     # Build brightness matrix [num_bins, num_cols] using ITU-R BT.601 luma
     pixels = np.array(img, dtype=np.float32)  # [H, W, 3]
