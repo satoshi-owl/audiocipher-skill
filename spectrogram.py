@@ -102,6 +102,35 @@ COLOR_SCHEMES = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SMART OPTIMIZE  (port of i2aOptimize() from spectrogram.html)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def smart_optimize_params(img_width: int, img_height: int) -> dict:
+    """
+    Auto-calculate ideal image2audio parameters from image dimensions.
+
+    Matches the website's Smart Optimize button (i2aOptimize() in spectrogram.html):
+      - num_cols = min(img_width, 1024)   — 1 synthesis col per pixel, max 1024
+      - num_bins = min(img_height, 512)   — freq bins, max 512
+      - duration = clamp(num_cols * 0.016, 2, 30)  — 16 ms per column
+      - fmin = 200 Hz, fmax = 16000 Hz   — standard audible range
+
+    Returns dict with keys: num_cols, num_bins, duration, fmin, fmax
+    """
+    num_cols = min(img_width,  1024)
+    num_bins = min(img_height, 512)
+    raw_dur  = num_cols * 0.016
+    duration = round(max(2.0, min(30.0, raw_dur)), 1)
+    return {
+        'num_cols': num_cols,
+        'num_bins': num_bins,
+        'duration': duration,
+        'fmin':     200.0,
+        'fmax':     16000.0,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # IMAGE → AUDIO  (ported from i2aRender, spectrogram.html 1178–1280)
 # ═══════════════════════════════════════════════════════════════════════════════
 
