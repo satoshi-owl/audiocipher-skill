@@ -249,24 +249,47 @@ def cmd_decode(args: argparse.Namespace):
 
 
 def cmd_image2audio(args: argparse.Namespace):
-    from spectrogram import image_to_audio  # type: ignore
-    from utils import write_wav  # type: ignore
+    smart = not args.no_smart_optimize
+    preview = not args.no_preview_png
 
-    audio = image_to_audio(
-        args.image,
-        fmin=args.fmin,
-        fmax=args.fmax,
-        duration=args.duration,
-        sr=args.sr,
-        amplitude=args.amplitude,
-        invert=args.invert,
-    )
-    write_wav(args.output, audio, sr=args.sr, mode=None)
-    size_kb = os.path.getsize(args.output) / 1024
-    print(
-        f'✓ Saved: {args.output}  ({size_kb:.1f} KB, '
-        f'{args.duration}s, {args.fmin:.0f}–{args.fmax:.0f} Hz)'
-    )
+    if preview:
+        from spectrogram import image_to_audio_with_preview  # type: ignore
+        wav_path, png_path = image_to_audio_with_preview(
+            args.image,
+            output_wav=args.output,
+            smart_optimize=smart,
+            sr=args.sr,
+            amplitude=args.amplitude,
+            invert=args.invert,
+        )
+        size_kb = os.path.getsize(wav_path) / 1024
+        print(wav_path)
+        print(png_path)
+        print(
+            f'✓ WAV: {wav_path}  ({size_kb:.1f} KB)\n'
+            f'✓ PNG: {png_path}',
+            file=sys.stderr,
+        )
+    else:
+        from spectrogram import image_to_audio  # type: ignore
+        from utils import write_wav  # type: ignore
+        audio = image_to_audio(
+            args.image,
+            fmin=args.fmin,
+            fmax=args.fmax,
+            duration=args.duration,
+            sr=args.sr,
+            amplitude=args.amplitude,
+            invert=args.invert,
+            smart_optimize=smart,
+        )
+        write_wav(args.output, audio, sr=args.sr, mode=None)
+        size_kb = os.path.getsize(args.output) / 1024
+        print(args.output)
+        print(
+            f'✓ WAV: {args.output}  ({size_kb:.1f} KB)',
+            file=sys.stderr,
+        )
 
 
 def cmd_analyze(args: argparse.Namespace):
@@ -425,7 +448,9 @@ Examples:
   python3 audiocipher.py decode cipher.wav --mode auto
   python3 audiocipher.py decode received.ogg --mode abp            # ABP after Telegram re-encode
   python3 audiocipher.py decode received.ogg --mode abp --passphrase "hunter2"
-  python3 audiocipher.py image2audio logo.png --output hidden.wav --fmin 1000 --fmax 8000
+  python3 audiocipher.py image2audio logo.png                              # → hidden.wav + hidden_spectrogram.png (Smart Optimize)
+  python3 audiocipher.py image2audio logo.png --no-preview-png             # → WAV only
+  python3 audiocipher.py image2audio logo.png --no-smart-optimize --duration 8 --fmin 1000 --fmax 8000
   python3 audiocipher.py analyze mystery.wav --output-dir ./findings/
   python3 audiocipher.py spectrogram mystery.wav --output spec.png --colormap green --labeled
   python3 audiocipher.py video cipher.wav --output cipher.mp4 --title "NULL"
@@ -563,6 +588,10 @@ Examples:
                      metavar='0-1', help='Output amplitude 0–1 (default: 0.8)')
     i2a.add_argument('--invert', action='store_true',
                      help='Invert brightness (white pixels → silence)')
+    i2a.add_argument('--no-smart-optimize', action='store_true',
+                     help='Disable Smart Optimize — use manual --duration/--fmin/--fmax')
+    i2a.add_argument('--no-preview-png', action='store_true',
+                     help='Skip spectrogram PNG — output WAV only')
     i2a.set_defaults(func=cmd_image2audio)
 
     # ── analyze ───────────────────────────────────────────────────────────────
