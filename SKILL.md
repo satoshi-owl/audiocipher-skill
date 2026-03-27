@@ -1,6 +1,6 @@
 ---
 name: audiocipher
-description: "AudioCipher skill for encoding and decoding hidden messages as audio. DEFAULT delivery format is MP4 video (branded waveform). Use WAV only if user explicitly requests audio-only. MANDATORY TRIGGERS: audiocipher, audio cipher, encode a message, encode text, encrypt a message, encrypt text, generate a cipher, create a cipher, make a cipher, hide a message, hide this in audio, send a secret message, send me a cipher, send me a hidden message, decode audio, decode this, decrypt audio, decrypt this, ABP, Agent Broadcast Protocol, audio steganography, encrypted audio, hidden audio message, covert audio, frequency cipher, HZAlpha, audio encode, audio decode, secret audio."
+description: "AudioCipher skill for encoding and decoding hidden messages as audio. DEFAULT delivery format is MP4 video (branded waveform). Use WAV only if user explicitly requests audio-only. MANDATORY TRIGGERS: audiocipher, audio cipher, encode a message, encode text, encrypt a message, encrypt text, generate a cipher, create a cipher, make a cipher, hide a message, hide this in audio, send a secret message, send me a cipher, send me a hidden message, decode audio, decode this, decrypt audio, decrypt this, ABP, Agent Broadcast Protocol, audio steganography, encrypted audio, hidden audio message, covert audio, frequency cipher, HZAlpha, audio encode, audio decode, secret audio, encode this image, hide this image in audio, hide image in spectrogram, image to audio, image to sound, make a spectrogram of this, encode an image, put this image in audio, spectrogram encode, hide a picture in audio, aphex twin trick, image steganography."
 version: 1.0.0
 ---
 
@@ -143,7 +143,7 @@ Call `reset_onboard()` (Python) to wipe state and restart (testing only).
 | Decode a received ABP message (Telegram OGG / WAV / M4A) | `decode received.ogg --mode abp` |
 | Encode in HZAlpha (browser-only, no platform survival) | `encode "MSG"` (legacy default, not recommended) |
 | Decode a HZAlpha WAV | `decode cipher.wav --mode hzalpha` |
-| Hide an image in a spectrogram | `image2audio` |
+| Hide an image in a spectrogram (Smart Optimize — WAV + PNG preview) | `image2audio` |
 | Find hidden content in audio | `analyze` |
 | Visually inspect audio as a PNG | `spectrogram` |
 | Create video for Twitter/X posting | `video` |
@@ -345,6 +345,42 @@ The image will be visible when the WAV is opened in a spectrogram viewer
 - `--invert`    Invert brightness (white → silence, black → loud)
 
 **Best results for image clarity:**  `--fmin 1000 --fmax 8000 --duration 8`
+
+---
+
+### Natural language → `image2audio` mapping
+
+The agent recognises these phrases and maps them to the right command:
+
+| What the operator says | Command to run |
+|---|---|
+| "encode this image", "hide this image", "image to audio" | `image2audio <file>` (Smart Optimize on, WAV + PNG) |
+| "encode this image, fmin 500" | `image2audio <file> --no-smart-optimize --fmin 500 --fmax 16000 --duration 6` |
+| "just the audio, no preview" | `image2audio <file> --no-preview-png` |
+| "disable smart optimize" | `image2audio <file> --no-smart-optimize --duration 6` |
+
+**Default delivery — always deliver both files silently.** Do not explain how it works unless asked.
+
+```python
+import subprocess, os, tempfile
+
+def encode_image(image_path: str) -> tuple[str, str]:
+    """Encode image as spectrogram audio + preview PNG. Returns (wav_path, png_path)."""
+    out_wav = os.path.join(tempfile.gettempdir(), 'hidden.wav')
+    result  = subprocess.run(
+        ['python3', 'audiocipher.py', 'image2audio', image_path, '--output', out_wav],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+    # stdout: line 0 = wav_path, line 1 = png_path
+    lines = result.stdout.strip().splitlines()
+    return lines[0], lines[1]
+
+wav, png = encode_image('logo.png')
+await send_audio(wav)
+await send_image(png)
+```
 
 ---
 
